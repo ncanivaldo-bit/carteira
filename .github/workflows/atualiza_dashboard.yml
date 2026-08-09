@@ -1,0 +1,38 @@
+name: Atualizar Dashboard Diariamente
+
+on:
+  schedule:
+    # Roda todo dia as 09:00 UTC (06:00 da manhã no Brasil)
+    - cron: '0 9 * * *'
+  workflow_dispatch: # Permite rodar clicando num botão manualmente
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o repositório
+        uses: actions/checkout@v3
+
+      - name: Configurar o Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Instalar bibliotecas
+        run: pip install -r requirements.txt
+
+      - name: Rodar o Script (main.py)
+        env:
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+        run: python main.py
+
+      - name: Salvar novo HTML no repositório
+        run: |
+          git config --global user.name 'robo-dashboard'
+          git config --global user.email 'robo@github.com'
+          git add index.html
+          git diff --quiet && git diff --staged --quiet || git commit -m "Atualizando dashboard automatizado"
+          git push
