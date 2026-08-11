@@ -376,13 +376,16 @@ df_pizza['Preço_Médio'] = get_col(df_pizza, ['médio', 'medio', 'pm'], 0)
 df_pizza['Preço_Mercado'] = get_col(df_pizza, ['mercado', 'cotação', 'cotacao'], 0)
 df_pizza['Variação'] = get_col(df_pizza, ['varia', 'var'], 0)
 
+# Buscando a coluna de quantidade (Qtd)
+qtd_col = [c for c in df_pizza.columns if 'qtd' in str(c).lower()][0] if any('qtd' in str(c).lower() for c in df_pizza.columns) else df_pizza.columns[1]
+df_pizza['Qtd'] = pd.to_numeric(df_pizza[qtd_col], errors='coerce').fillna(0)
+
 col_patrimonio = [c for c in df_pizza.columns if 'patrimonio' in str(c).lower() or 'patrimônio' in str(c).lower() or 'liquido' in str(c).lower()]
 if col_patrimonio:
     df_pizza['valor'] = pd.to_numeric(df_pizza[col_patrimonio[0]], errors='coerce').fillna(0)
 else:
-    qtd_col = [c for c in df_pizza.columns if 'qtd' in str(c).lower()][0] if any('qtd' in str(c).lower() for c in df_pizza.columns) else df_pizza.columns[1]
     preco_col = [c for c in df_pizza.columns if 'mercado' in str(c).lower()][0]
-    df_pizza['valor'] = pd.to_numeric(df_pizza[qtd_col], errors='coerce').fillna(0) * pd.to_numeric(df_pizza[preco_col], errors='coerce').fillna(0)
+    df_pizza['valor'] = df_pizza['Qtd'] * pd.to_numeric(df_pizza[preco_col], errors='coerce').fillna(0)
 
 mapa_tipos = dict(zip(df_pizza['ticker'].astype(str).str.strip(), df_pizza['tipo']))
 mapa_seguimentos = dict(zip(df_pizza['ticker'].astype(str).str.strip(), df_pizza['seguimento']))
@@ -406,16 +409,21 @@ try:
         data_limite_12m = datetime.now() - relativedelta(years=1)
         df_mov_prov['is_12m'] = df_mov_prov['Data_Dt'] >= data_limite_12m
         df_mov_prov['AnoMes'] = df_mov_prov['Data_Dt'].dt.to_period('M').astype(str)
+        
+        # Puxando o valor do último provento para o Resumo
+        ultimo_mes_prov = df_mov_prov['AnoMes'].max()
+        ultimos_proventos = df_mov_prov[df_mov_prov['AnoMes'] == ultimo_mes_prov]['Valor_Num'].sum() if pd.notna(ultimo_mes_prov) else 0.0
     else:
         df_mov_prov['is_12m'] = True
         df_mov_prov['AnoMes'] = "N/D"
+        ultimos_proventos = 0.0
 
     dividendos_totais = df_mov_prov['Valor_Num'].sum()
     dividendos_12m = df_mov_prov.loc[df_mov_prov['is_12m'], 'Valor_Num'].sum()
     df_export_prov = df_mov_prov[['AnoMes', 'Valor_Num', 'ticker', 'tipo', 'seguimento', 'is_12m']].rename(columns={'Valor_Num': 'valor'})
     dados_proventos_raw_js = df_export_prov.to_json(orient='records')
 except Exception as e:
-    dividendos_totais, dividendos_12m = 0.0, 0.0
+    dividendos_totais, dividendos_12m, ultimos_proventos = 0.0, 0.0, 0.0
     dados_proventos_raw_js = "[]"
 
 ganho_capital = patrimonio_atual - investido_atual
@@ -423,6 +431,7 @@ lucro_total = ganho_capital + dividendos_totais
 rentabilidade_total_pct = (lucro_total / investido_atual * 100) if investido_atual > 0 else 0
 
 var_patrimonio_pct = (ganho_capital / investido_atual * 100) if investido_atual > 0 else 0
+pct_ultimos_proventos = (ultimos_proventos / investido_atual * 100) if investido_atual > 0 else 0
 
 if len(df_grafico) >= 12:
     inv_12m_atras = pd.to_numeric(df_grafico.iloc[-12]['Total_Investido'], errors='coerce')
@@ -452,6 +461,8 @@ str_lucro = formata_moeda(lucro_total)
 str_ganho_capital = formata_moeda(ganho_capital)
 str_dividendos_total = formata_moeda(dividendos_totais)
 str_dividendos_12m = formata_moeda(dividendos_12m)
+str_ultimos_proventos = formata_moeda(ultimos_proventos)
+str_pct_ultimos_proventos = f"{pct_ultimos_proventos:.2f}%".replace(".", ",")
 str_rentabilidade_total = f"{rentabilidade_total_pct:.2f}%".replace(".", ",")
 str_rentabilidade_12m = f"{rentabilidade_12m_pct:.2f}%".replace(".", ",")
 str_var_patrimonio = f"{sinal_var_pat} {abs(var_patrimonio_pct):.2f}%".replace(".", ",")
@@ -459,7 +470,7 @@ str_var_patrimonio = f"{sinal_var_pat} {abs(var_patrimonio_pct):.2f}%".replace("
 meses_js = json.dumps(df_grafico['AnoMes'].tolist())
 valor_aplicado_js = json.dumps(pd.to_numeric(df_grafico['Total_Investido'], errors='coerce').fillna(0.0).tolist())
 valor_mercado_js = json.dumps(pd.to_numeric(df_grafico['Valor_Mercado'], errors='coerce').fillna(0.0).tolist())
-dados_carteira_js = df_pizza[['ticker', 'tipo', 'seguimento', 'gestora', 'valor', 'Preço_Médio', 'Preço_Mercado', 'Variação']].fillna(0).to_json(orient='records')
+dados_carteira_js = df_pizza[['ticker', 'tipo', 'seguimento', 'gestora', 'valor', 'Preço_Médio', 'Preço_Mercado', 'Variação', 'Qtd']].fillna(0).to_json(orient='records')
 
 html_template = """<!DOCTYPE html>
 <html lang="pt-BR">
@@ -530,7 +541,10 @@ html_template = """<!DOCTYPE html>
                 <div class="kpi-sub"><span>Valor investido</span><span style="font-weight: 600; color: var(--green);">__INVESTIDO__</span></div>
             </div>
             <div class="card"><div class="kpi-title">💲 Lucro total</div><div class="kpi-value __COR_LUCRO__">__LUCRO__</div><div class="kpi-sub"><div style="display: flex; flex-direction: column; gap: 2px;"><span>Ganho</span><span class="__COR_GANHO__" style="font-size: 13px; font-weight: 600;">__GANHO_CAPITAL__</span></div><div style="display: flex; flex-direction: column; gap: 2px; text-align: right;"><span>Divs</span><span style="color: var(--text-main); font-size: 13px; font-weight: 600;">__DIVIDENDOS_TOTAL__</span></div></div></div>
-            <div class="card"><div class="kpi-title">🪙 Proventos (12M)</div><div class="kpi-value" style="color: var(--primary);">__DIVIDENDOS_12M__</div><div class="kpi-sub"><div style="display: flex; flex-direction: column; gap: 2px;"><span style="font-size: 11.5px; color: var(--text-muted);">Total Acumulado</span><span style="color: var(--text-main); font-size: 13px; font-weight: 600;">__DIVIDENDOS_TOTAL__</span></div></div></div>
+            <div class="card"><div class="kpi-title">🪙 Últimos Proventos</div>
+                <div class="kpi-value" style="color: var(--primary);">__ULTIMOS_PROVENTOS__ <span style="font-size: 14.5px; font-weight: 600; margin-left: 10px; color: var(--text-muted);">(__PCT_ULTIMOS_PROVENTOS__)</span></div>
+                <div class="kpi-sub"><div style="display: flex; flex-direction: column; gap: 2px;"><span style="font-size: 11.5px; color: var(--text-muted);">Total Acumulado</span><span style="color: var(--text-main); font-size: 13px; font-weight: 600;">__DIVIDENDOS_TOTAL__</span></div></div>
+            </div>
             <div class="card"><div class="kpi-title">📊 Rentabilidade (12M)</div><div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;"><div><div class="kpi-value __COR_RENT_12M__" style="font-size: 19px; margin-bottom: 0;">__RENTABILIDADE_12M__ __SINAL_RENT_12M__</div></div><div style="border-left: 1px solid var(--border-color); padding-left: 15px;"><div style="font-size: 11px; color: var(--text-muted); margin-bottom: 2px;">Total</div><div class="__COR_RENT_TOTAL__" style="font-size: 16px; font-weight: bold;">__RENTABILIDADE_TOTAL__ __SINAL_RENT_TOTAL__</div></div></div></div>
         </div>
         <div class="charts-grid">
@@ -542,10 +556,10 @@ html_template = """<!DOCTYPE html>
     <!-- ================= ABA 2: PROVENTOS ================= -->
     <div id="tab-proventos" class="tab-content" style="overflow: hidden; padding-bottom: 5px;">
         <div class="dashboard-grid">
+            <div class="card"><div class="kpi-title">💰 Últimos Dividendos</div><div class="kpi-value text-green" id="kpi-prov-ultimos">R$ 0,00</div><div class="kpi-sub"><span id="kpi-prov-ultimos-pct">0,00% sobre investido</span></div></div>
             <div class="card"><div class="kpi-title">💵 Proventos Filtrados</div><div class="kpi-value text-green" id="kpi-prov-total">R$ 0,00</div><div class="kpi-sub"><span>Acumulado histórico</span></div></div>
             <div class="card"><div class="kpi-title">📅 Proventos (12M)</div><div class="kpi-value text-green" id="kpi-prov-12m">R$ 0,00</div><div class="kpi-sub"><span>Últimos 12 Meses</span></div></div>
             <div class="card"><div class="kpi-title">📈 Média Mensal</div><div class="kpi-value" style="color: var(--primary);" id="kpi-prov-media">R$ 0,00</div><div class="kpi-sub"><span>Média por mês ativo</span></div></div>
-            <div class="card"><div class="kpi-title">💰 Últimos Dividendos</div><div class="kpi-value text-green" id="kpi-prov-ultimos">R$ 0,00</div><div class="kpi-sub"><span>Mês mais recente recebido</span></div></div>
         </div>
         <div class="charts-grid charts-grid-full" style="flex-grow: 1; min-height: 0; display: flex; flex-direction: column; margin-bottom: 0;">
             <div class="card" style="display: flex; flex-direction: column; flex-grow: 1;">
@@ -586,6 +600,7 @@ html_template = """<!DOCTYPE html>
                         <tr>
                             <th>Ativo</th>
                             <th>Seguimento</th>
+                            <th>Qtd</th>
                             <th>Preço Médio</th>
                             <th>Cotação Atual</th>
                             <th>Variação</th>
@@ -603,11 +618,12 @@ html_template = """<!DOCTYPE html>
     <script>
         const configPlotly = { displayModeBar: false, responsive: true };
         
+        // Ajustada a margem top (t) de 15 para 30 para o texto caber direitinho acima das barras
         const baseLayout = { 
             paper_bgcolor: 'rgba(0,0,0,0)', 
             plot_bgcolor: 'rgba(0,0,0,0)', 
             font: { color: '#6b7280', size: 11.5, family: 'Segoe UI' }, 
-            margin: { t: 15, l: 45, r: 15, b: 35 }, 
+            margin: { t: 30, l: 45, r: 15, b: 35 }, 
             hovermode: 'x unified', 
             xaxis: { showgrid: false, zeroline: false, fixedrange: true }, 
             yaxis: { showgrid: false, zeroline: false, fixedrange: true }, 
@@ -617,6 +633,7 @@ html_template = """<!DOCTYPE html>
         };
         const cloneLayout = (obj) => JSON.parse(JSON.stringify(obj));
         const formataMoedaJS = (valor) => valor.toLocaleString('pt-BR', {style: 'currency', currency: 'BRL'});
+        const valInvestidoAtual = __INVESTIDO_ATUAL_NUM__;
 
         function mudarAba(nomeAba) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -697,17 +714,22 @@ html_template = """<!DOCTYPE html>
 
             document.getElementById('kpi-prov-total').innerText = formataMoedaJS(tTotal); document.getElementById('kpi-prov-12m').innerText = formataMoedaJS(t12m);
             document.getElementById('kpi-prov-media').innerText = formataMoedaJS(tMedia); document.getElementById('kpi-prov-ultimos').innerText = formataMoedaJS(tUltimo);
+            
+            // Calculando o % sobre o investido com base no filtro atual
+            let tUltimoPct = valInvestidoAtual > 0 ? (tUltimo / valInvestidoAtual) * 100 : 0;
+            document.getElementById('kpi-prov-ultimos-pct').innerText = tUltimoPct.toFixed(2).replace('.', ',') + '% sobre investido';
 
             let layoutProventos = cloneLayout(baseLayout); layoutProventos.showlegend = false;
             
-            // GRÁFICO DE BARRAS DE PROVENTOS (COM VALORES)
+            // GRÁFICO DE BARRAS DE PROVENTOS (COM VALORES ACIMA DA BARRA - outside)
             Plotly.react('grafico-proventos-mensal', [{ 
                 x: labelsBarra, 
                 y: valoresBarra, 
                 type: 'bar', 
                 marker: { color: '#22c55e', line: { color: '#16a34a', width: 1} },
                 text: valoresBarra.map(v => formataMoedaJS(v)),
-                textposition: 'auto'
+                textposition: 'outside',
+                cliponaxis: false
             }], layoutProventos, configPlotly);
         }
         popularFiltros(); atualizarAbaProventos();
@@ -767,6 +789,7 @@ html_template = """<!DOCTYPE html>
                     rebalanceData.push({ 
                         ticker: a.ticker, 
                         seg: seg, 
+                        qtd: a.Qtd || 0,
                         current: a.valor, 
                         target: targetAssetValue, 
                         diff: diff,
@@ -809,6 +832,7 @@ html_template = """<!DOCTYPE html>
                 tr.innerHTML = `
                     <td style="font-weight: 700; color: var(--text-main);">${d.ticker}</td>
                     <td style="color: var(--text-muted);">${d.seg}</td>
+                    <td style="font-weight: 600; color: var(--primary);">${d.qtd}</td>
                     <td style="font-weight: 500;">${formataMoedaJS(d.pm)}</td>
                     <td style="font-weight: 500;">${formataMoedaJS(d.preco)}</td>
                     <td style="color: ${varColor}; font-weight: 700;">${varText}</td>
@@ -833,8 +857,10 @@ html_template = """<!DOCTYPE html>
 </html>"""
 
 html_final = html_template.replace("__PATRIMONIO__", str_patrimonio).replace("__PATRIMONIO_ATUAL_NUM__", str(patrimonio_atual))
-html_final = html_final.replace("__INVESTIDO__", str_investido).replace("__LUCRO__", str_lucro).replace("__GANHO_CAPITAL__", str_ganho_capital)
+html_final = html_final.replace("__INVESTIDO__", str_investido).replace("__INVESTIDO_ATUAL_NUM__", str(investido_atual))
+html_final = html_final.replace("__LUCRO__", str_lucro).replace("__GANHO_CAPITAL__", str_ganho_capital)
 html_final = html_final.replace("__DIVIDENDOS_TOTAL__", str_dividendos_total).replace("__DIVIDENDOS_12M__", str_dividendos_12m)
+html_final = html_final.replace("__ULTIMOS_PROVENTOS__", str_ultimos_proventos).replace("__PCT_ULTIMOS_PROVENTOS__", str_pct_ultimos_proventos)
 html_final = html_final.replace("__RENTABILIDADE_TOTAL__", str_rentabilidade_total).replace("__RENTABILIDADE_12M__", str_rentabilidade_12m)
 html_final = html_final.replace("__COR_LUCRO__", cor_lucro).replace("__COR_GANHO__", cor_ganho)
 html_final = html_final.replace("__COR_RENT_12M__", cor_rent_12m).replace("__COR_RENT_TOTAL__", cor_rent_total)
