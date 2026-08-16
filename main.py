@@ -409,5 +409,5 @@ html = html.replace('__JSON_CARTEIRA__', js_carteira)
 html = html.replace('__JSON_PROVENTOS__', js_proventos)
 html = html.replace('__JSON_INSIGHTS__', js_insights)
 
-with open("dashboard_premium.html", "w", encoding="utf-8") as f: f.write(html)
+with open("index.html", "w", encoding="utf-8") as f: f.write(html)
 print("✅ Sucesso! Dashboard 'dashboard_premium.html' gerado.")
