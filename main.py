@@ -437,10 +437,6 @@ else:
 
 # ----------------- INSIGHTS DE IA -----------------
 insights_ia = []
-if ganho_capital > 0:
-    insights_ia.append(f"🟢 Seu patrimônio teve uma valorização de capital de <b>R$ {ganho_capital:,.2f}</b>.")
-else:
-    insights_ia.append(f"🔴 Sua carteira está descontada em <b>R$ {abs(ganho_capital):,.2f}</b>. Boa oportunidade para aportes?")
 
 if investido_atual > 0:
     yoc = (dividendos_totais / investido_atual) * 100
@@ -525,7 +521,7 @@ html_template = """<!DOCTYPE html>
         .kpi-value { font-size: 22px; font-weight: 700; margin-bottom: 2px; display: flex; align-items: center; }
         .kpi-sub { font-size: 12.5px; color: var(--text-muted); display: flex; justify-content: space-between; margin-top: 10px;}
         .text-green { color: var(--green); } .text-red { color: var(--red); }
-        .charts-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 15px; min-height: 320px; flex-shrink: 0; margin-bottom: 15px; }
+        .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; min-height: 380px; flex-shrink: 0; margin-bottom: 15px; }
         .charts-grid-full { grid-template-columns: 1fr; min-height: 380px; margin-bottom: 5px;}
         .chart-container { width: 100%; height: 100%; min-height: 200px; position: relative; }
         .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
@@ -566,6 +562,7 @@ html_template = """<!DOCTYPE html>
         <div class="card" style="background: linear-gradient(145deg, rgba(59,130,246,0.15) 0%, rgba(139,92,246,0.15) 100%); border-left: 4px solid var(--primary); margin-bottom: 15px;">
             <div class="kpi-title" style="color: var(--text-main); font-size: 15px; font-weight: 600;"><i class="fa-solid fa-wand-magic-sparkles" style="color: var(--primary); margin-right: 5px;"></i> Insights da Carteira</div>
             <ul id="ai-insights" style="margin-top: 10px; color: var(--text-muted); font-size: 13.5px; padding-left: 20px;">
+                <li id="insight-reco" style="margin-bottom: 6px;">Analisando oportunidades na carteira...</li>
                 __INSIGHTS_HTML__
             </ul>
         </div>
@@ -635,6 +632,14 @@ html_template = """<!DOCTYPE html>
         <div class="card" style="flex-grow: 1; display: flex; flex-direction: column; min-height: 300px;">
             <div class="chart-header">
                 <div class="chart-title">Radar de Aportes (Clique nos títulos para ordenar)</div>
+                <div class="filtros-prov" style="margin-left: auto;">
+                    <select id="f-status" class="select-filter" onchange="renderTable()">
+                        <option value="Todos">Todos os Status</option>
+                        <option value="Comprar">Recomendação: Comprar</option>
+                        <option value="Vender">Recomendação: Vender</option>
+                        <option value="Aguardar">Recomendação: Aguardar</option>
+                    </select>
+                </div>
             </div>
             <div class="table-container">
                 <table>
@@ -791,7 +796,6 @@ html_template = """<!DOCTYPE html>
             }
         });
 
-        // Variáveis globais para a Tabela e Ordenação
         let rebalanceDataArray = [];
         let curSortCol = 'diff';
         let sortAsc = false;
@@ -811,9 +815,25 @@ html_template = """<!DOCTYPE html>
                 let targetAssetValue = targetSegValue / assets.length;
 
                 assets.forEach(a => {
-                    let diff = targetAssetValue - a.valor;
                     let pct_atual = carteiraTotal > 0 ? (a.valor / carteiraTotal) * 100 : 0;
                     let target_pct = carteiraTotal > 0 ? (targetAssetValue / carteiraTotal) * 100 : 0;
+                    let varPct = (a['Variação'] || 0) * 100;
+                    let current = a.valor || 0;
+                    let preco = a['Preço_Mercado'] || 0;
+                    let pm = a['Preço_Médio'] || 0;
+                    
+                    let actionType = "Aguardar";
+                    let diffValue = targetAssetValue - current;
+
+                    if (varPct >= 20) {
+                        actionType = "Vender";
+                    } 
+                    else if (current <= (targetAssetValue * 0.90) && preco <= pm) {
+                        actionType = "Comprar";
+                    } 
+                    else if (current >= (targetAssetValue * 1.10) && preco >= pm) {
+                        actionType = "Vender";
+                    }
                     
                     rebalanceDataArray.push({ 
                         ticker: a.ticker || 'N/D', 
@@ -821,21 +841,44 @@ html_template = """<!DOCTYPE html>
                         seg: seg, 
                         gestora: a.gestora || 'N/D',
                         qtd: a.Qtd || 0,
-                        pm: a['Preço_Médio'] || 0,
-                        preco: a['Preço_Mercado'] || 0,
+                        pm: pm,
+                        preco: preco,
                         var: a['Variação'] || 0,
-                        current: a.valor || 0,
+                        current: current,
                         pct_atual: pct_atual,
                         target_pct: target_pct,
                         target: targetAssetValue, 
-                        diff: diff
+                        diff: diffValue,
+                        actionType: actionType
                     });
                 });
             }
+            
+            // Atualizar Insights com as recomendações de forma dinâmica!
+            let comprarList = rebalanceDataArray.filter(d => d.actionType === 'Comprar').map(d => d.ticker);
+            let venderList = rebalanceDataArray.filter(d => d.actionType === 'Vender').map(d => d.ticker);
+            
+            let htmlReco = "";
+            if (comprarList.length > 0) {
+                htmlReco += `🟢 <b>Oportunidades de Compra:</b> ${comprarList.join(', ')}. <br>`;
+            } else {
+                htmlReco += `🟢 <b>Oportunidades de Compra:</b> Nenhuma no momento. Ativos no alvo ou esticados. <br>`;
+            }
+            if (venderList.length > 0) {
+                htmlReco += `🔴 <b>Analisar Venda (Lucro ou Acima do Alvo):</b> ${venderList.join(', ')}.`;
+            }
+            document.getElementById('insight-reco').innerHTML = htmlReco;
         }
 
         function renderTable() {
-            rebalanceDataArray.sort((a, b) => {
+            let filtroStatus = document.getElementById('f-status').value;
+            
+            let dadosFiltrados = rebalanceDataArray.filter(d => {
+                if (filtroStatus === 'Todos') return true;
+                return d.actionType === filtroStatus;
+            });
+
+            dadosFiltrados.sort((a, b) => {
                 let valA = a[curSortCol];
                 let valB = b[curSortCol];
                 if (typeof valA === 'string') valA = valA.toLowerCase();
@@ -848,9 +891,8 @@ html_template = """<!DOCTYPE html>
             const tbody = document.getElementById('tabela-rebalanceamento');
             tbody.innerHTML = '';
 
-            rebalanceDataArray.forEach(d => {
+            dadosFiltrados.forEach(d => {
                 let tr = document.createElement('tr');
-                
                 let varPct = d.var * 100;
                 let varColor = varPct >= 0 ? "var(--green)" : "var(--red)";
                 let varText = (varPct >= 0 ? "+" : "") + varPct.toFixed(2).replace(".", ",") + "%";
@@ -858,24 +900,24 @@ html_template = """<!DOCTYPE html>
                 let diffText = "";
                 let diffColor = "";
 
-                if (varPct >= 20) {
+                if (d.actionType === "Vender" && varPct >= 20) {
                     diffText = `Vender (Lucro de ${varPct.toFixed(1).replace('.',',')}%)`;
                     diffColor = "var(--red)";
                 } 
-                else if (d.current <= (d.target * 0.90) && d.preco <= d.pm) {
+                else if (d.actionType === "Comprar") {
                     diffText = `Comprar ${formataMoedaJS(d.target - d.current)}`;
                     diffColor = "var(--green)";
                 } 
-                else if (d.current >= (d.target * 1.10) && d.preco >= d.pm) {
+                else if (d.actionType === "Vender") {
                     diffText = `Vender (Acima do alvo)`;
                     diffColor = "var(--red)";
                 } 
                 else {
-                    let diffValue = d.target - d.current;
-                    if (diffValue > 0) {
-                        diffText = `Falta ${formataMoedaJS(diffValue)}`;
-                    } else if (diffValue < 0) {
-                        diffText = `Sobra ${formataMoedaJS(Math.abs(diffValue))}`;
+                    // Lógica corrigida de Falta e Sobra (Somente visual, status é Aguardar)
+                    if (d.diff > 0) {
+                        diffText = `Falta ${formataMoedaJS(d.diff)}`;
+                    } else if (d.diff < 0) {
+                        diffText = `Sobra ${formataMoedaJS(Math.abs(d.diff))}`;
                     } else {
                         diffText = "No Alvo";
                     }
