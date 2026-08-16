@@ -237,7 +237,7 @@ if not df_resultado.empty:
 
     try: aba_carteira = planilha.worksheet("Carteira")
     except: aba_carteira = planilha.add_worksheet(title="Carteira", rows="1000", cols="20")
-    aba_carteira.clear() # Limpa aba inteira
+    aba_carteira.clear()
     aba_carteira.update(range_name='A1', values=[df_resultado.columns.values.tolist()] + df_resultado.values.tolist(), value_input_option='USER_ENTERED')
     print("-> Aba 'Carteira' atualizada!")
 
@@ -340,7 +340,7 @@ except Exception as e:
     dados_metricas_js = "{}"
 
 # ==============================================================================
-# 9. GERAÇÃO DO DASHBOARD E INSIGHTS (COM O SEU MOTOR)
+# 9. GERAÇÃO DO DASHBOARD E INSIGHTS
 # ==============================================================================
 print("Aguardando o Sheets processar as fórmulas (5s)...")
 time.sleep(5)
@@ -533,7 +533,7 @@ html_template = """<!DOCTYPE html>
         .select-filter { background-color: var(--card-bg); border: 1px solid var(--border-color); color: var(--text-main); padding: 6px 12px; border-radius: 6px; font-size: 12px; outline: none; cursor: pointer; }
         .filtros-prov { display: flex; gap: 10px; }
         
-        /* Nova Tabela de Rebalanceamento com Cabeçalhos Clicáveis e Coluna Congelada */
+        /* Tabela de Rebalanceamento com Cabeçalhos Clicáveis e Coluna Congelada */
         .table-container { overflow-x: auto; max-width: 100%; position: relative; margin-top: 10px; flex-grow: 1; }
         table { width: 100%; border-collapse: separate; border-spacing: 0; text-align: left; font-size: 13px; min-width: 1200px; }
         th, td { padding: 12px 10px; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
@@ -541,11 +541,10 @@ html_template = """<!DOCTYPE html>
         th:hover { background-color: #334155; color: var(--text-main); }
         th i { margin-left: 5px; font-size: 11px; }
         
-        /* Congelando a primeira coluna (Ativo) */
         td:first-child, th:first-child { position: sticky; left: 0; z-index: 3; background-color: var(--card-bg); border-right: 1px solid var(--border-color); box-shadow: 2px 0 5px rgba(0,0,0,0.2);}
-        th:first-child { z-index: 4; } /* O cabeçalho da primeira coluna precisa ficar acima da linha e da coluna */
+        th:first-child { z-index: 4; }
         tr:hover td { background-color: #334155; }
-        tr:hover td:first-child { background-color: #334155; } /* Mantém o hover na coluna congelada */
+        tr:hover td:first-child { background-color: #334155; }
 
         @media (max-width: 992px) { body { height: auto; overflow-y: auto; overflow-x: hidden; } .dashboard-grid { grid-template-columns: repeat(2, 1fr); } .charts-grid { grid-template-columns: 1fr; display: flex; flex-direction: column; min-height: auto;} .chart-container { height: 350px; min-height: 350px; } }
         @media (max-width: 600px) { header { flex-direction: column; align-items: stretch; gap: 15px; padding-bottom: 15px; } .nav-links { justify-content: center; width: 100%; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; } .header-buttons button { width: 100%; } .dashboard-grid { grid-template-columns: 1fr; } .chart-header { flex-direction: column; align-items: flex-start; gap: 10px; } .filtros-prov { flex-direction: column; width: 100%; } .select-filter { width: 100%; } .chart-container { height: 300px; min-height: 300px; } }
@@ -584,14 +583,10 @@ html_template = """<!DOCTYPE html>
             <div class="card"><div class="kpi-title">📊 Rentabilidade (12M)</div><div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;"><div><div class="kpi-value __COR_RENT_12M__" style="font-size: 19px; margin-bottom: 0;">__RENTABILIDADE_12M__ __SINAL_RENT_12M__</div></div><div style="border-left: 1px solid var(--border-color); padding-left: 15px;"><div style="font-size: 11px; color: var(--text-muted); margin-bottom: 2px;">Total</div><div class="__COR_RENT_TOTAL__" style="font-size: 16px; font-weight: bold;">__RENTABILIDADE_TOTAL__ __SINAL_RENT_TOTAL__</div></div></div></div>
         </div>
 
-        <div class="charts-grid" style="grid-template-columns: 1fr; min-height: 250px;">
-            <div class="card" style="display: flex; flex-direction: column;"><div class="chart-header"><div class="chart-title">Evolução do Patrimônio</div></div><div id="grafico-linha" class="chart-container"></div></div>
-        </div>
-
         <div class="charts-grid">
             <div class="card" style="display: flex; flex-direction: column;">
-                <div class="chart-header"><div class="chart-title">Jornada de Retorno Oficial (Waterfall)</div></div>
-                <div id="grafico-waterfall" class="chart-container"></div>
+                <div class="chart-header"><div class="chart-title">Evolução do Patrimônio</div></div>
+                <div id="grafico-linha" class="chart-container"></div>
             </div>
             <div class="card" style="display: flex; flex-direction: column;">
                 <div class="chart-header"><div class="chart-title">Composição da Carteira (Ativos)</div></div>
@@ -700,29 +695,6 @@ html_template = """<!DOCTYPE html>
             { x: __MESES_JS__, y: __VALOR_MERCADO_JS__, name: 'Valor de Mercado', type: 'scatter', mode: 'lines', line: { color: '#3b82f6', width: 3 }, marker: { size: 5 }}
         ], layoutLinha, configPlotly);
 
-        // ================= GRÁFICO WATERFALL REVISADO =================
-        // Investido -> Valorização -> Patrimônio -> Dividendos -> Riqueza Total
-        const valInvestido = valInvestidoAtual;
-        const valGanho = __GANHO_CAPITAL_NUM__;
-        const valPatrimonio = valInvestido + valGanho;
-        const valProv = __DIVIDENDOS_TOTAIS_NUM__;
-        const valFinal = valPatrimonio + valProv;
-
-        const traceWaterfall = {
-            type: "waterfall", orientation: "v",
-            measure: ["absolute", "relative", "total", "relative", "total"],
-            x: ["Investido", "Oscilação Cotas", "Patrimônio", "Proventos", "Riqueza Acumulada"],
-            y: [valInvestido, valGanho, valPatrimonio, valProv, valFinal],
-            textposition: "outside",
-            text: [formataMoedaJS(valInvestido), formataMoedaJS(valGanho), formataMoedaJS(valPatrimonio), formataMoedaJS(valProv), formataMoedaJS(valFinal)],
-            decreasing: { marker: { color: "#ef4444" } },
-            increasing: { marker: { color: "#10b981" } },
-            totals: { marker: { color: "#3b82f6" } }
-        };
-        let layoutWater = cloneLayout(baseLayout);
-        layoutWater.margin.t = 45; // Mais espaço pra cima
-        Plotly.newPlot('grafico-waterfall', [traceWaterfall], layoutWater, configPlotly);
-
         // VARIÁVEIS COMPARTILHADAS (CARTEIRA)
         const dadosCarteira = __DADOS_CARTEIRA_JS__;
         const valPatrimonioAtual = __PATRIMONIO_ATUAL_NUM__;
@@ -804,7 +776,7 @@ html_template = """<!DOCTYPE html>
         }
         popularFiltros(); atualizarAbaProventos();
 
-        // ================= LÓGICA DE REBALANCEAMENTO (COM TABELA NOVA) =================
+        // ================= LÓGICA DE REBALANCEAMENTO =================
         const metricasPlanilha = __DADOS_METRICAS_JS__;
         let segmentTargets = {};
         let segmentsList = [...new Set(dadosCarteira.map(a => a.seguimento || 'Outros'))].sort();
@@ -822,7 +794,7 @@ html_template = """<!DOCTYPE html>
         // Variáveis globais para a Tabela e Ordenação
         let rebalanceDataArray = [];
         let curSortCol = 'diff';
-        let sortAsc = false; // Começa ordenando decrescente
+        let sortAsc = false;
 
         function buildRebalanceData() {
             rebalanceDataArray = [];
@@ -836,7 +808,7 @@ html_template = """<!DOCTYPE html>
             for (let seg in assetsBySeg) {
                 let assets = assetsBySeg[seg];
                 let targetSegValue = carteiraTotal * (segmentTargets[seg] / 100);
-                let targetAssetValue = targetSegValue / assets.length; // Divide igualitário entre ativos do mesmo seguimento
+                let targetAssetValue = targetSegValue / assets.length;
 
                 assets.forEach(a => {
                     let diff = targetAssetValue - a.valor;
@@ -863,7 +835,6 @@ html_template = """<!DOCTYPE html>
         }
 
         function renderTable() {
-            // Ordenação
             rebalanceDataArray.sort((a, b) => {
                 let valA = a[curSortCol];
                 let valB = b[curSortCol];
@@ -900,7 +871,14 @@ html_template = """<!DOCTYPE html>
                     diffColor = "var(--red)";
                 } 
                 else {
-                    diffText = `Falta ${formataMoedaJS(d.target - d.current)}`;
+                    let diffValue = d.target - d.current;
+                    if (diffValue > 0) {
+                        diffText = `Falta ${formataMoedaJS(diffValue)}`;
+                    } else if (diffValue < 0) {
+                        diffText = `Sobra ${formataMoedaJS(Math.abs(diffValue))}`;
+                    } else {
+                        diffText = "No Alvo";
+                    }
                     diffColor = "var(--text-muted)";
                 }
 
@@ -980,8 +958,6 @@ html_final = html_final.replace("__COR_VAR_PAT__", cor_var_pat).replace("__VAR_P
 html_final = html_final.replace("__MESES_JS__", meses_js).replace("__VALOR_APLICADO_JS__", valor_aplicado_js).replace("__VALOR_MERCADO_JS__", valor_mercado_js)
 html_final = html_final.replace("__DADOS_CARTEIRA_JS__", dados_carteira_js).replace("__DADOS_PROVENTOS_RAW_JS__", dados_proventos_raw_js)
 html_final = html_final.replace("__DADOS_METRICAS_JS__", dados_metricas_js)
-html_final = html_final.replace("__GANHO_CAPITAL_NUM__", str(ganho_capital))
-html_final = html_final.replace("__DIVIDENDOS_TOTAIS_NUM__", str(dividendos_totais))
 html_final = html_final.replace("__INSIGHTS_HTML__", html_insights)
 
 nome_arquivo = "index.html"
