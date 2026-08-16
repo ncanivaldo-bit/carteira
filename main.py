@@ -237,7 +237,7 @@ if not df_resultado.empty:
 
     try: aba_carteira = planilha.worksheet("Carteira")
     except: aba_carteira = planilha.add_worksheet(title="Carteira", rows="1000", cols="20")
-    aba_carteira.batch_clear(["A:K"])
+    aba_carteira.clear() # Limpa aba inteira
     aba_carteira.update(range_name='A1', values=[df_resultado.columns.values.tolist()] + df_resultado.values.tolist(), value_input_option='USER_ENTERED')
     print("-> Aba 'Carteira' atualizada!")
 
@@ -497,6 +497,7 @@ html_template = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Dashboard de Investimentos</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         :root { 
             --bg-color: #0f172a; 
@@ -532,10 +533,19 @@ html_template = """<!DOCTYPE html>
         .select-filter { background-color: var(--card-bg); border: 1px solid var(--border-color); color: var(--text-main); padding: 6px 12px; border-radius: 6px; font-size: 12px; outline: none; cursor: pointer; }
         .filtros-prov { display: flex; gap: 10px; }
         
-        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
-        th { padding: 12px 10px; border-bottom: 2px solid var(--border-color); color: var(--text-muted); font-weight: 600;}
-        td { padding: 12px 10px; border-bottom: 1px solid var(--border-color); }
+        /* Nova Tabela de Rebalanceamento com Cabeçalhos Clicáveis e Coluna Congelada */
+        .table-container { overflow-x: auto; max-width: 100%; position: relative; margin-top: 10px; flex-grow: 1; }
+        table { width: 100%; border-collapse: separate; border-spacing: 0; text-align: left; font-size: 13px; min-width: 1200px; }
+        th, td { padding: 12px 10px; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
+        th { color: var(--text-muted); font-weight: 600; position: sticky; top: 0; background-color: var(--card-bg); z-index: 2; cursor: pointer; user-select: none; transition: background 0.2s;}
+        th:hover { background-color: #334155; color: var(--text-main); }
+        th i { margin-left: 5px; font-size: 11px; }
+        
+        /* Congelando a primeira coluna (Ativo) */
+        td:first-child, th:first-child { position: sticky; left: 0; z-index: 3; background-color: var(--card-bg); border-right: 1px solid var(--border-color); box-shadow: 2px 0 5px rgba(0,0,0,0.2);}
+        th:first-child { z-index: 4; } /* O cabeçalho da primeira coluna precisa ficar acima da linha e da coluna */
         tr:hover td { background-color: #334155; }
+        tr:hover td:first-child { background-color: #334155; } /* Mantém o hover na coluna congelada */
 
         @media (max-width: 992px) { body { height: auto; overflow-y: auto; overflow-x: hidden; } .dashboard-grid { grid-template-columns: repeat(2, 1fr); } .charts-grid { grid-template-columns: 1fr; display: flex; flex-direction: column; min-height: auto;} .chart-container { height: 350px; min-height: 350px; } }
         @media (max-width: 600px) { header { flex-direction: column; align-items: stretch; gap: 15px; padding-bottom: 15px; } .nav-links { justify-content: center; width: 100%; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; } .header-buttons button { width: 100%; } .dashboard-grid { grid-template-columns: 1fr; } .chart-header { flex-direction: column; align-items: flex-start; gap: 10px; } .filtros-prov { flex-direction: column; width: 100%; } .select-filter { width: 100%; } .chart-container { height: 300px; min-height: 300px; } }
@@ -555,7 +565,7 @@ html_template = """<!DOCTYPE html>
     <div id="tab-resumo" class="tab-content active">
         
         <div class="card" style="background: linear-gradient(145deg, rgba(59,130,246,0.15) 0%, rgba(139,92,246,0.15) 100%); border-left: 4px solid var(--primary); margin-bottom: 15px;">
-            <div class="kpi-title" style="color: var(--text-main); font-size: 15px; font-weight: 600;">✨ Insights da Carteira</div>
+            <div class="kpi-title" style="color: var(--text-main); font-size: 15px; font-weight: 600;"><i class="fa-solid fa-wand-magic-sparkles" style="color: var(--primary); margin-right: 5px;"></i> Insights da Carteira</div>
             <ul id="ai-insights" style="margin-top: 10px; color: var(--text-muted); font-size: 13.5px; padding-left: 20px;">
                 __INSIGHTS_HTML__
             </ul>
@@ -579,8 +589,14 @@ html_template = """<!DOCTYPE html>
         </div>
 
         <div class="charts-grid">
-            <div class="card" style="display: flex; flex-direction: column;"><div class="chart-header"><div class="chart-title">Jornada de Retorno (Waterfall)</div></div><div id="grafico-waterfall" class="chart-container"></div></div>
-            <div class="card" style="display: flex; flex-direction: column;"><div class="chart-header"><div class="chart-title">Composição da Carteira (Ativos)</div></div><div id="grafico-sunburst" class="chart-container"></div></div>
+            <div class="card" style="display: flex; flex-direction: column;">
+                <div class="chart-header"><div class="chart-title">Jornada de Retorno Oficial (Waterfall)</div></div>
+                <div id="grafico-waterfall" class="chart-container"></div>
+            </div>
+            <div class="card" style="display: flex; flex-direction: column;">
+                <div class="chart-header"><div class="chart-title">Composição da Carteira (Ativos)</div></div>
+                <div id="grafico-sunburst" class="chart-container"></div>
+            </div>
         </div>
     </div>
 
@@ -623,21 +639,25 @@ html_template = """<!DOCTYPE html>
 
         <div class="card" style="flex-grow: 1; display: flex; flex-direction: column; min-height: 300px;">
             <div class="chart-header">
-                <div class="chart-title">Sugestão de Aportes e Status dos Ativos</div>
+                <div class="chart-title">Radar de Aportes (Clique nos títulos para ordenar)</div>
             </div>
-            <div style="overflow-y: auto; margin-top: 10px; flex-grow: 1;">
+            <div class="table-container">
                 <table>
                     <thead>
                         <tr>
-                            <th>Ativo</th>
-                            <th>Seguimento</th>
-                            <th>Qtd</th>
-                            <th>Preço Médio</th>
-                            <th>Cotação Atual</th>
-                            <th>Variação</th>
-                            <th>Valor Atual</th>
-                            <th>Alvo Ideal</th>
-                            <th>Ação Recomendada</th>
+                            <th onclick="sortTable('ticker')">Ativo <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('tipo')">Tipo <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('seg')">Seguimento <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('gestora')">Gestora <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('qtd')">Qtd <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('pm')">PM <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('preco')">Cotação <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('var')">Var (%) <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('current')">Valor Atual <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('pct_atual')">% Carteira <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('target_pct')">% Alvo <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('target')">Valor Alvo <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('diff')">Falta/Sobra (R$) <i class="fa-solid fa-sort"></i></th>
                         </tr>
                     </thead>
                     <tbody id="tabela-rebalanceamento"></tbody>
@@ -680,24 +700,28 @@ html_template = """<!DOCTYPE html>
             { x: __MESES_JS__, y: __VALOR_MERCADO_JS__, name: 'Valor de Mercado', type: 'scatter', mode: 'lines', line: { color: '#3b82f6', width: 3 }, marker: { size: 5 }}
         ], layoutLinha, configPlotly);
 
-        // ================= GRÁFICO WATERFALL =================
+        // ================= GRÁFICO WATERFALL REVISADO =================
+        // Investido -> Valorização -> Patrimônio -> Dividendos -> Riqueza Total
         const valInvestido = valInvestidoAtual;
         const valGanho = __GANHO_CAPITAL_NUM__;
+        const valPatrimonio = valInvestido + valGanho;
         const valProv = __DIVIDENDOS_TOTAIS_NUM__;
-        const valFinal = valInvestido + valGanho + valProv;
+        const valFinal = valPatrimonio + valProv;
 
         const traceWaterfall = {
             type: "waterfall", orientation: "v",
-            measure: ["absolute", "relative", "relative", "total"],
-            x: ["Investido", "Ganho Cap.", "Dividendos", "Resultado"],
-            y: [valInvestido, valGanho, valProv, valFinal],
+            measure: ["absolute", "relative", "total", "relative", "total"],
+            x: ["Investido", "Oscilação Cotas", "Patrimônio", "Proventos", "Riqueza Acumulada"],
+            y: [valInvestido, valGanho, valPatrimonio, valProv, valFinal],
             textposition: "outside",
-            text: [formataMoedaJS(valInvestido), formataMoedaJS(valGanho), formataMoedaJS(valProv), formataMoedaJS(valFinal)],
+            text: [formataMoedaJS(valInvestido), formataMoedaJS(valGanho), formataMoedaJS(valPatrimonio), formataMoedaJS(valProv), formataMoedaJS(valFinal)],
             decreasing: { marker: { color: "#ef4444" } },
             increasing: { marker: { color: "#10b981" } },
             totals: { marker: { color: "#3b82f6" } }
         };
-        Plotly.newPlot('grafico-waterfall', [traceWaterfall], cloneLayout(baseLayout), configPlotly);
+        let layoutWater = cloneLayout(baseLayout);
+        layoutWater.margin.t = 45; // Mais espaço pra cima
+        Plotly.newPlot('grafico-waterfall', [traceWaterfall], layoutWater, configPlotly);
 
         // VARIÁVEIS COMPARTILHADAS (CARTEIRA)
         const dadosCarteira = __DADOS_CARTEIRA_JS__;
@@ -780,7 +804,7 @@ html_template = """<!DOCTYPE html>
         }
         popularFiltros(); atualizarAbaProventos();
 
-        // ================= LÓGICA DE REBALANCEAMENTO =================
+        // ================= LÓGICA DE REBALANCEAMENTO (COM TABELA NOVA) =================
         const metricasPlanilha = __DADOS_METRICAS_JS__;
         let segmentTargets = {};
         let segmentsList = [...new Set(dadosCarteira.map(a => a.seguimento || 'Outros'))].sort();
@@ -794,6 +818,120 @@ html_template = """<!DOCTYPE html>
                 segmentTargets[s] = defaultPct;
             }
         });
+
+        // Variáveis globais para a Tabela e Ordenação
+        let rebalanceDataArray = [];
+        let curSortCol = 'diff';
+        let sortAsc = false; // Começa ordenando decrescente
+
+        function buildRebalanceData() {
+            rebalanceDataArray = [];
+            let assetsBySeg = {};
+            dadosCarteira.forEach(a => {
+                let seg = a.seguimento || 'Outros';
+                if (!assetsBySeg[seg]) assetsBySeg[seg] = [];
+                assetsBySeg[seg].push(a);
+            });
+
+            for (let seg in assetsBySeg) {
+                let assets = assetsBySeg[seg];
+                let targetSegValue = carteiraTotal * (segmentTargets[seg] / 100);
+                let targetAssetValue = targetSegValue / assets.length; // Divide igualitário entre ativos do mesmo seguimento
+
+                assets.forEach(a => {
+                    let diff = targetAssetValue - a.valor;
+                    let pct_atual = carteiraTotal > 0 ? (a.valor / carteiraTotal) * 100 : 0;
+                    let target_pct = carteiraTotal > 0 ? (targetAssetValue / carteiraTotal) * 100 : 0;
+                    
+                    rebalanceDataArray.push({ 
+                        ticker: a.ticker || 'N/D', 
+                        tipo: a.tipo || 'N/D',
+                        seg: seg, 
+                        gestora: a.gestora || 'N/D',
+                        qtd: a.Qtd || 0,
+                        pm: a['Preço_Médio'] || 0,
+                        preco: a['Preço_Mercado'] || 0,
+                        var: a['Variação'] || 0,
+                        current: a.valor || 0,
+                        pct_atual: pct_atual,
+                        target_pct: target_pct,
+                        target: targetAssetValue, 
+                        diff: diff
+                    });
+                });
+            }
+        }
+
+        function renderTable() {
+            // Ordenação
+            rebalanceDataArray.sort((a, b) => {
+                let valA = a[curSortCol];
+                let valB = b[curSortCol];
+                if (typeof valA === 'string') valA = valA.toLowerCase();
+                if (typeof valB === 'string') valB = valB.toLowerCase();
+                if (valA < valB) return sortAsc ? -1 : 1;
+                if (valA > valB) return sortAsc ? 1 : -1;
+                return 0;
+            });
+
+            const tbody = document.getElementById('tabela-rebalanceamento');
+            tbody.innerHTML = '';
+
+            rebalanceDataArray.forEach(d => {
+                let tr = document.createElement('tr');
+                
+                let varPct = d.var * 100;
+                let varColor = varPct >= 0 ? "var(--green)" : "var(--red)";
+                let varText = (varPct >= 0 ? "+" : "") + varPct.toFixed(2).replace(".", ",") + "%";
+
+                let diffText = "";
+                let diffColor = "";
+
+                if (varPct >= 20) {
+                    diffText = `Vender (Lucro de ${varPct.toFixed(1).replace('.',',')}%)`;
+                    diffColor = "var(--red)";
+                } 
+                else if (d.current <= (d.target * 0.90) && d.preco <= d.pm) {
+                    diffText = `Comprar ${formataMoedaJS(d.target - d.current)}`;
+                    diffColor = "var(--green)";
+                } 
+                else if (d.current >= (d.target * 1.10) && d.preco >= d.pm) {
+                    diffText = `Vender (Acima do alvo)`;
+                    diffColor = "var(--red)";
+                } 
+                else {
+                    diffText = `Falta ${formataMoedaJS(d.target - d.current)}`;
+                    diffColor = "var(--text-muted)";
+                }
+
+                tr.innerHTML = `
+                    <td style="font-weight: 700; color: var(--text-main);">${d.ticker}</td>
+                    <td style="color: var(--text-muted);">${d.tipo}</td>
+                    <td style="color: var(--text-muted);">${d.seg}</td>
+                    <td style="color: var(--text-muted);">${d.gestora}</td>
+                    <td style="font-weight: 600; color: var(--primary);">${d.qtd}</td>
+                    <td style="font-weight: 500;">${formataMoedaJS(d.pm)}</td>
+                    <td style="font-weight: 500;">${formataMoedaJS(d.preco)}</td>
+                    <td style="color: ${varColor}; font-weight: 700;">${varText}</td>
+                    <td style="font-weight: 600;">${formataMoedaJS(d.current)}</td>
+                    <td style="font-weight: 500;">${d.pct_atual.toFixed(2).replace('.',',')}%</td>
+                    <td style="color: var(--text-muted);">${d.target_pct.toFixed(2).replace('.',',')}%</td>
+                    <td style="color: var(--text-muted);">${formataMoedaJS(d.target)}</td>
+                    <td style="color: ${diffColor}; font-weight: 600;">${diffText}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function sortTable(colName) {
+            if (curSortCol === colName) {
+                sortAsc = !sortAsc;
+            } else {
+                curSortCol = colName;
+                sortAsc = false;
+            }
+            renderTable();
+        }
 
         function drawRebalanceTab() {
             const container = document.getElementById('segment-inputs');
@@ -814,80 +952,8 @@ html_template = """<!DOCTYPE html>
             alerta.innerText = `Soma atual da Estratégia: ${totalPct.toFixed(1)}%`;
             alerta.style.color = Math.abs(totalPct - 100) < 0.1 ? 'var(--green)' : 'var(--red)';
 
-            const tbody = document.getElementById('tabela-rebalanceamento');
-            tbody.innerHTML = '';
-
-            let assetsBySeg = {};
-            dadosCarteira.forEach(a => {
-                let seg = a.seguimento || 'Outros';
-                if (!assetsBySeg[seg]) assetsBySeg[seg] = [];
-                assetsBySeg[seg].push(a);
-            });
-
-            let rebalanceData = [];
-            for (let seg in assetsBySeg) {
-                let assets = assetsBySeg[seg];
-                let targetSegValue = carteiraTotal * (segmentTargets[seg] / 100);
-                let targetAssetValue = targetSegValue / assets.length;
-
-                assets.forEach(a => {
-                    let diff = targetAssetValue - a.valor;
-                    rebalanceData.push({ 
-                        ticker: a.ticker, 
-                        seg: seg, 
-                        qtd: a.Qtd || 0,
-                        current: a.valor, 
-                        target: targetAssetValue, 
-                        diff: diff,
-                        pm: a['Preço_Médio'] || 0,
-                        preco: a['Preço_Mercado'] || 0,
-                        var: a['Variação'] || 0
-                    });
-                });
-            }
-
-            rebalanceData.sort((a, b) => b.diff - a.diff);
-
-            rebalanceData.forEach(d => {
-                let tr = document.createElement('tr');
-                
-                let varPct = d.var * 100;
-                let varColor = varPct >= 0 ? "var(--green)" : "var(--red)";
-                let varText = (varPct >= 0 ? "+" : "") + varPct.toFixed(2).replace(".", ",") + "%";
-
-                let diffText = "";
-                let diffColor = "";
-
-                if (varPct >= 20) {
-                    diffText = `Vender (Lucro de ${varPct.toFixed(1).replace('.',',')}%)`;
-                    diffColor = "var(--red)";
-                } 
-                else if (d.current <= (d.target * 0.90) && d.preco <= d.pm) {
-                    diffText = `Comprar ${formataMoedaJS(d.target - d.current)}`;
-                    diffColor = "var(--green)";
-                } 
-                else if (d.current >= (d.target * 1.10) && d.preco >= d.pm) {
-                    diffText = `Vender ${formataMoedaJS(d.current - d.target)}`;
-                    diffColor = "var(--red)";
-                } 
-                else {
-                    diffText = "Aguardar";
-                    diffColor = "var(--text-muted)";
-                }
-
-                tr.innerHTML = `
-                    <td style="font-weight: 700; color: var(--text-main);">${d.ticker}</td>
-                    <td style="color: var(--text-muted);">${d.seg}</td>
-                    <td style="font-weight: 600; color: var(--primary);">${d.qtd}</td>
-                    <td style="font-weight: 500;">${formataMoedaJS(d.pm)}</td>
-                    <td style="font-weight: 500;">${formataMoedaJS(d.preco)}</td>
-                    <td style="color: ${varColor}; font-weight: 700;">${varText}</td>
-                    <td style="font-weight: 600;">${formataMoedaJS(d.current)}</td>
-                    <td style="color: var(--text-muted);">${formataMoedaJS(d.target)}</td>
-                    <td style="color: ${diffColor}; font-weight: 600;">${diffText}</td>
-                `;
-                tbody.appendChild(tr);
-            });
+            buildRebalanceData();
+            renderTable();
         }
 
         function updateTarget(seg, val) {
@@ -914,8 +980,6 @@ html_final = html_final.replace("__COR_VAR_PAT__", cor_var_pat).replace("__VAR_P
 html_final = html_final.replace("__MESES_JS__", meses_js).replace("__VALOR_APLICADO_JS__", valor_aplicado_js).replace("__VALOR_MERCADO_JS__", valor_mercado_js)
 html_final = html_final.replace("__DADOS_CARTEIRA_JS__", dados_carteira_js).replace("__DADOS_PROVENTOS_RAW_JS__", dados_proventos_raw_js)
 html_final = html_final.replace("__DADOS_METRICAS_JS__", dados_metricas_js)
-
-# Novas variáveis
 html_final = html_final.replace("__GANHO_CAPITAL_NUM__", str(ganho_capital))
 html_final = html_final.replace("__DIVIDENDOS_TOTAIS_NUM__", str(dividendos_totais))
 html_final = html_final.replace("__INSIGHTS_HTML__", html_insights)
