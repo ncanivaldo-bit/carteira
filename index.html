@@ -66,6 +66,11 @@
             <a onclick="mudarAba('gestoras')" id="link-gestoras">Gestoras</a>
             <a onclick="mudarAba('rebalanceamento')" id="link-rebalanceamento">Rebalanceamento</a>
         </div>
+        <div class="header-buttons">
+            <button onclick="dispararAtualizacao()" style="background-color: var(--primary); color: white; border: none; padding: 8px 15px; border-radius: 6px; cursor: pointer; font-weight: bold;">
+                <i class="fa-solid fa-rotate"></i> Atualizar Dados
+            </button>
+        </div>
     </header>
 
     <!-- ================= ABA 1: RESUMO ================= -->
@@ -366,7 +371,6 @@
                 });
             }
             
-            // Atualizar Insights com as recomendações de forma dinâmica!
             let comprarList = rebalanceDataArray.filter(d => d.actionType === 'Comprar').map(d => d.ticker);
             let venderList = rebalanceDataArray.filter(d => d.actionType === 'Vender').map(d => d.ticker);
             
@@ -425,7 +429,6 @@
                     diffColor = "var(--red)";
                 } 
                 else {
-                    // Lógica corrigida de Falta e Sobra (Somente visual, status é Aguardar)
                     if (d.diff > 0) {
                         diffText = `Falta ${formataMoedaJS(d.diff)}`;
                     } else if (d.diff < 0) {
@@ -495,6 +498,55 @@
 
         drawRebalanceTab();
         window.addEventListener('resize', () => { window.dispatchEvent(new Event('resize')); });
+
+        // ================= FUNÇÃO PARA ATUALIZAR VIA GITHUB API =================
+        async function dispararAtualizacao() {
+            const GITHUB_USER = 'ncanivaldo-bit'; 
+            const GITHUB_REPO = 'carteira';
+            const WORKFLOW_FILE = 'atualiza_dashboard.yml'; 
+            
+            let token = localStorage.getItem('github_token');
+            
+            if (!token) {
+                token = prompt("🔒 Primeira vez atualizando por aqui!\n\nPor favor, insira seu Personal Access Token do GitHub (começa com ghp_):");
+                if (!token) {
+                    alert("Atualização cancelada. O Token é necessário.");
+                    return;
+                }
+                localStorage.setItem('github_token', token);
+            }
+
+            const btn = event.currentTarget;
+            const textoOriginal = btn.innerHTML;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Enviando comando...';
+            btn.disabled = true;
+
+            try {
+                const response = await fetch(`https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches`, {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/vnd.github.v3+json',
+                        'Authorization': `token ${token}`
+                    },
+                    body: JSON.stringify({ ref: 'main' }) 
+                });
+
+                if (response.ok || response.status === 204) {
+                    btn.innerHTML = '<i class="fa-solid fa-check"></i> Atualizando...';
+                    btn.style.backgroundColor = 'var(--green)';
+                    alert("🚀 Comando enviado com sucesso!\n\nO servidor do GitHub já está rodando o script. Recarregue esta página em cerca de 40 a 60 segundos.");
+                } else {
+                    const err = await response.json();
+                    throw new Error(err.message || 'Erro na autenticação');
+                }
+            } catch (error) {
+                console.error(error);
+                alert(`❌ Erro ao atualizar: ${error.message}\n\nSe o seu token for inválido, vamos resetá-lo.`);
+                localStorage.removeItem('github_token');
+                btn.innerHTML = textoOriginal;
+                btn.disabled = false;
+            }
+        }
     </script>
 </body>
 </html>
