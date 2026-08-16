@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Dashboard de Investimentos</title>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         :root { 
             --bg-color: #0f172a; 
@@ -40,10 +41,19 @@
         .select-filter { background-color: var(--card-bg); border: 1px solid var(--border-color); color: var(--text-main); padding: 6px 12px; border-radius: 6px; font-size: 12px; outline: none; cursor: pointer; }
         .filtros-prov { display: flex; gap: 10px; }
         
-        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
-        th { padding: 12px 10px; border-bottom: 2px solid var(--border-color); color: var(--text-muted); font-weight: 600;}
-        td { padding: 12px 10px; border-bottom: 1px solid var(--border-color); }
+        /* Nova Tabela de Rebalanceamento com Cabeçalhos Clicáveis e Coluna Congelada */
+        .table-container { overflow-x: auto; max-width: 100%; position: relative; margin-top: 10px; flex-grow: 1; }
+        table { width: 100%; border-collapse: separate; border-spacing: 0; text-align: left; font-size: 13px; min-width: 1200px; }
+        th, td { padding: 12px 10px; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
+        th { color: var(--text-muted); font-weight: 600; position: sticky; top: 0; background-color: var(--card-bg); z-index: 2; cursor: pointer; user-select: none; transition: background 0.2s;}
+        th:hover { background-color: #334155; color: var(--text-main); }
+        th i { margin-left: 5px; font-size: 11px; }
+        
+        /* Congelando a primeira coluna (Ativo) */
+        td:first-child, th:first-child { position: sticky; left: 0; z-index: 3; background-color: var(--card-bg); border-right: 1px solid var(--border-color); box-shadow: 2px 0 5px rgba(0,0,0,0.2);}
+        th:first-child { z-index: 4; } /* O cabeçalho da primeira coluna precisa ficar acima da linha e da coluna */
         tr:hover td { background-color: #334155; }
+        tr:hover td:first-child { background-color: #334155; } /* Mantém o hover na coluna congelada */
 
         @media (max-width: 992px) { body { height: auto; overflow-y: auto; overflow-x: hidden; } .dashboard-grid { grid-template-columns: repeat(2, 1fr); } .charts-grid { grid-template-columns: 1fr; display: flex; flex-direction: column; min-height: auto;} .chart-container { height: 350px; min-height: 350px; } }
         @media (max-width: 600px) { header { flex-direction: column; align-items: stretch; gap: 15px; padding-bottom: 15px; } .nav-links { justify-content: center; width: 100%; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; } .header-buttons button { width: 100%; } .dashboard-grid { grid-template-columns: 1fr; } .chart-header { flex-direction: column; align-items: flex-start; gap: 10px; } .filtros-prov { flex-direction: column; width: 100%; } .select-filter { width: 100%; } .chart-container { height: 300px; min-height: 300px; } }
@@ -63,7 +73,7 @@
     <div id="tab-resumo" class="tab-content active">
         
         <div class="card" style="background: linear-gradient(145deg, rgba(59,130,246,0.15) 0%, rgba(139,92,246,0.15) 100%); border-left: 4px solid var(--primary); margin-bottom: 15px;">
-            <div class="kpi-title" style="color: var(--text-main); font-size: 15px; font-weight: 600;">✨ Insights da Carteira</div>
+            <div class="kpi-title" style="color: var(--text-main); font-size: 15px; font-weight: 600;"><i class="fa-solid fa-wand-magic-sparkles" style="color: var(--primary); margin-right: 5px;"></i> Insights da Carteira</div>
             <ul id="ai-insights" style="margin-top: 10px; color: var(--text-muted); font-size: 13.5px; padding-left: 20px;">
                 <li style='margin-bottom: 6px;'>🔴 Sua carteira está descontada em <b>R$ 21,524.93</b>. Boa oportunidade para aportes?</li><li style='margin-bottom: 6px;'>🔥 Seu <b>Yield on Cost (Histórico)</b> está em <b>18.62%</b>. Esse é o rendimento real do seu dinheiro!</li><li style='margin-bottom: 6px;'>🏆 O ativo campeão da carteira hoje é <b>VILG11</b>, com <b>3.36%</b> de lucro.</li>
             </ul>
@@ -87,8 +97,14 @@
         </div>
 
         <div class="charts-grid">
-            <div class="card" style="display: flex; flex-direction: column;"><div class="chart-header"><div class="chart-title">Jornada de Retorno (Waterfall)</div></div><div id="grafico-waterfall" class="chart-container"></div></div>
-            <div class="card" style="display: flex; flex-direction: column;"><div class="chart-header"><div class="chart-title">Composição da Carteira (Ativos)</div></div><div id="grafico-sunburst" class="chart-container"></div></div>
+            <div class="card" style="display: flex; flex-direction: column;">
+                <div class="chart-header"><div class="chart-title">Jornada de Retorno Oficial (Waterfall)</div></div>
+                <div id="grafico-waterfall" class="chart-container"></div>
+            </div>
+            <div class="card" style="display: flex; flex-direction: column;">
+                <div class="chart-header"><div class="chart-title">Composição da Carteira (Ativos)</div></div>
+                <div id="grafico-sunburst" class="chart-container"></div>
+            </div>
         </div>
     </div>
 
@@ -131,21 +147,25 @@
 
         <div class="card" style="flex-grow: 1; display: flex; flex-direction: column; min-height: 300px;">
             <div class="chart-header">
-                <div class="chart-title">Sugestão de Aportes e Status dos Ativos</div>
+                <div class="chart-title">Radar de Aportes (Clique nos títulos para ordenar)</div>
             </div>
-            <div style="overflow-y: auto; margin-top: 10px; flex-grow: 1;">
+            <div class="table-container">
                 <table>
                     <thead>
                         <tr>
-                            <th>Ativo</th>
-                            <th>Seguimento</th>
-                            <th>Qtd</th>
-                            <th>Preço Médio</th>
-                            <th>Cotação Atual</th>
-                            <th>Variação</th>
-                            <th>Valor Atual</th>
-                            <th>Alvo Ideal</th>
-                            <th>Ação Recomendada</th>
+                            <th onclick="sortTable('ticker')">Ativo <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('tipo')">Tipo <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('seg')">Seguimento <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('gestora')">Gestora <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('qtd')">Qtd <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('pm')">PM <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('preco')">Cotação <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('var')">Var (%) <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('current')">Valor Atual <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('pct_atual')">% Carteira <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('target_pct')">% Alvo <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('target')">Valor Alvo <i class="fa-solid fa-sort"></i></th>
+                            <th onclick="sortTable('diff')">Falta/Sobra (R$) <i class="fa-solid fa-sort"></i></th>
                         </tr>
                     </thead>
                     <tbody id="tabela-rebalanceamento"></tbody>
@@ -188,24 +208,28 @@
             { x: ["2023-05", "2023-11", "2023-12", "2024-01", "2024-02", "2024-03", "2024-04", "2024-05", "2024-06", "2024-07", "2024-08", "2024-09", "2024-10", "2024-11", "2024-12", "2025-01", "2025-02", "2025-03", "2025-04", "2025-05", "2025-06", "2025-07", "2025-08", "2025-09", "2025-10", "2025-11", "2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08"], y: [2724.59, 17100.39, 18360.559999999998, 24986.690000000002, 40263.55, 106917.19, 107880.52, 106953.06, 106312.51, 158489.17, 169898.01, 179343.41999999998, 183485.24, 178567.27, 184755.05, 176983.88999999998, 183015.2, 192151.37, 204750.46, 207457.23, 204646.76, 202651.91, 208288.95, 215103.55, 217015.09, 224003.43, 241480.75, 244718.89, 250079.33000000002, 254184.18, 262024.21, 256435.31, 261078.84, 265419.04, 260825.28999999998], name: 'Valor de Mercado', type: 'scatter', mode: 'lines', line: { color: '#3b82f6', width: 3 }, marker: { size: 5 }}
         ], layoutLinha, configPlotly);
 
-        // ================= GRÁFICO WATERFALL =================
+        // ================= GRÁFICO WATERFALL REVISADO =================
+        // Investido -> Valorização -> Patrimônio -> Dividendos -> Riqueza Total
         const valInvestido = valInvestidoAtual;
         const valGanho = -21524.929999999993;
+        const valPatrimonio = valInvestido + valGanho;
         const valProv = 52571.13;
-        const valFinal = valInvestido + valGanho + valProv;
+        const valFinal = valPatrimonio + valProv;
 
         const traceWaterfall = {
             type: "waterfall", orientation: "v",
-            measure: ["absolute", "relative", "relative", "total"],
-            x: ["Investido", "Ganho Cap.", "Dividendos", "Resultado"],
-            y: [valInvestido, valGanho, valProv, valFinal],
+            measure: ["absolute", "relative", "total", "relative", "total"],
+            x: ["Investido", "Oscilação Cotas", "Patrimônio", "Proventos", "Riqueza Acumulada"],
+            y: [valInvestido, valGanho, valPatrimonio, valProv, valFinal],
             textposition: "outside",
-            text: [formataMoedaJS(valInvestido), formataMoedaJS(valGanho), formataMoedaJS(valProv), formataMoedaJS(valFinal)],
+            text: [formataMoedaJS(valInvestido), formataMoedaJS(valGanho), formataMoedaJS(valPatrimonio), formataMoedaJS(valProv), formataMoedaJS(valFinal)],
             decreasing: { marker: { color: "#ef4444" } },
             increasing: { marker: { color: "#10b981" } },
             totals: { marker: { color: "#3b82f6" } }
         };
-        Plotly.newPlot('grafico-waterfall', [traceWaterfall], cloneLayout(baseLayout), configPlotly);
+        let layoutWater = cloneLayout(baseLayout);
+        layoutWater.margin.t = 45; // Mais espaço pra cima
+        Plotly.newPlot('grafico-waterfall', [traceWaterfall], layoutWater, configPlotly);
 
         // VARIÁVEIS COMPARTILHADAS (CARTEIRA)
         const dadosCarteira = [{"ticker":"TRXF11","tipo":"FII TIJOLO B3","seguimento":"URBANO","gestora":"TRX","valor":18775.14,"Pre\u00e7o_M\u00e9dio":96.4214,"Pre\u00e7o_Mercado":79.22,"Varia\u00e7\u00e3o":-0.1783977322,"Qtd":237},{"ticker":"CPSH11","tipo":"FII TIJOLO B3","seguimento":"SHOPPING","gestora":"CAPITANIA","valor":17897.43,"Pre\u00e7o_M\u00e9dio":10.2946,"Pre\u00e7o_Mercado":9.69,"Varia\u00e7\u00e3o":-0.0587300076,"Qtd":1847},{"ticker":"GGRC11","tipo":"FII TIJOLO B3","seguimento":"LOGISTICO","gestora":"ZAGRO","valor":17278.28,"Pre\u00e7o_M\u00e9dio":9.7586,"Pre\u00e7o_Mercado":9.37,"Varia\u00e7\u00e3o":-0.0398240391,"Qtd":1844},{"ticker":"PMLL11","tipo":"FII TIJOLO B3","seguimento":"SHOPPING","gestora":"PATRIA","valor":17154.72,"Pre\u00e7o_M\u00e9dio":104.8968,"Pre\u00e7o_Mercado":100.32,"Varia\u00e7\u00e3o":-0.0436318388,"Qtd":171},{"ticker":"XPML11","tipo":"FII TIJOLO B3","seguimento":"SHOPPING","gestora":"XP","valor":16908.75,"Pre\u00e7o_M\u00e9dio":107.2536,"Pre\u00e7o_Mercado":101.25,"Varia\u00e7\u00e3o":-0.0559756802,"Qtd":167},{"ticker":"XPLG11","tipo":"FII TIJOLO B3","seguimento":"LOGISTICO","gestora":"XP","valor":16199.5,"Pre\u00e7o_M\u00e9dio":93.3347,"Pre\u00e7o_Mercado":89.5,"Varia\u00e7\u00e3o":-0.0410848625,"Qtd":181},{"ticker":"PCIP11","tipo":"FII PAPEL B3","seguimento":"CRI","gestora":"PATRIA","valor":13104.0,"Pre\u00e7o_M\u00e9dio":82.7903,"Pre\u00e7o_Mercado":72.0,"Varia\u00e7\u00e3o":-0.130333213,"Qtd":182},{"ticker":"GARE11","tipo":"FII TIJOLO B3","seguimento":"URBANO","gestora":"GUARDIAN","valor":13699.05,"Pre\u00e7o_M\u00e9dio":8.7441,"Pre\u00e7o_Mercado":8.13,"Varia\u00e7\u00e3o":-0.0702271518,"Qtd":1685},{"ticker":"VRTA11","tipo":"FII PAPEL B3","seguimento":"CRI","gestora":"FATOR VERITA","valor":13405.78,"Pre\u00e7o_M\u00e9dio":75.6258,"Pre\u00e7o_Mercado":69.46,"Varia\u00e7\u00e3o":-0.081530415,"Qtd":193},{"ticker":"BCRI11","tipo":"FII PAPEL B3","seguimento":"CRI","gestora":"BANESTES","valor":13314.48,"Pre\u00e7o_M\u00e9dio":62.4068,"Pre\u00e7o_Mercado":57.39,"Varia\u00e7\u00e3o":-0.080388828,"Qtd":232},{"ticker":"VILG11","tipo":"FII TIJOLO B3","seguimento":"LOGISTICO","gestora":"VINCI","valor":14425.5,"Pre\u00e7o_M\u00e9dio":85.6269,"Pre\u00e7o_Mercado":88.5,"Varia\u00e7\u00e3o":0.033554056,"Qtd":163},{"ticker":"BTCI11","tipo":"FII PAPEL B3","seguimento":"CRI","gestora":"BTG PACTUAL","valor":11457.0,"Pre\u00e7o_M\u00e9dio":9.3729,"Pre\u00e7o_Mercado":9.0,"Varia\u00e7\u00e3o":-0.0397863845,"Qtd":1273},{"ticker":"RBVA11","tipo":"FII TIJOLO B3","seguimento":"URBANO","gestora":"RIO BRAVO","valor":10643.4,"Pre\u00e7o_M\u00e9dio":8.7155,"Pre\u00e7o_Mercado":8.76,"Varia\u00e7\u00e3o":0.0051117782,"Qtd":1215},{"ticker":"TVRI11","tipo":"FII TIJOLO B3","seguimento":"URBANO","gestora":"TIVIO CAPITAL","valor":9596.88,"Pre\u00e7o_M\u00e9dio":90.03,"Pre\u00e7o_Mercado":88.86,"Varia\u00e7\u00e3o":-0.0129956681,"Qtd":108},{"ticker":"TGAR11","tipo":"FII PAPEL B3","seguimento":"DESENV.","gestora":"TG CORE","valor":4549.2,"Pre\u00e7o_M\u00e9dio":87.4447,"Pre\u00e7o_Mercado":44.6,"Varia\u00e7\u00e3o":-0.4899634054,"Qtd":102},{"ticker":"RURA11","tipo":"FII PAPEL B3","seguimento":"AGRO","gestora":"ITAU","valor":8613.5,"Pre\u00e7o_M\u00e9dio":8.19,"Pre\u00e7o_Mercado":8.05,"Varia\u00e7\u00e3o":-0.0170940171,"Qtd":1070},{"ticker":"FATN11","tipo":"FII TIJOLO B3","seguimento":"LAJE","gestora":"BR CAPITAL","valor":7815.38,"Pre\u00e7o_M\u00e9dio":79.8928,"Pre\u00e7o_Mercado":77.38,"Varia\u00e7\u00e3o":-0.0314518098,"Qtd":101},{"ticker":"TEPP11","tipo":"FII TIJOLO B3","seguimento":"LAJE","gestora":"TELLUS","valor":7544.7,"Pre\u00e7o_M\u00e9dio":7.92,"Pre\u00e7o_Mercado":7.47,"Varia\u00e7\u00e3o":-0.0568181818,"Qtd":1010},{"ticker":"KORE11","tipo":"FII TIJOLO B3","seguimento":"LAJE","gestora":"KINEA","valor":7627.52,"Pre\u00e7o_M\u00e9dio":63.8061,"Pre\u00e7o_Mercado":64.64,"Varia\u00e7\u00e3o":0.0130692564,"Qtd":118},{"ticker":"BDIF11","tipo":"FII PAPEL B3","seguimento":"INFRA","gestora":"BTG PACTUAL","valor":7055.0,"Pre\u00e7o_M\u00e9dio":70.4,"Pre\u00e7o_Mercado":70.55,"Varia\u00e7\u00e3o":0.0021306818,"Qtd":100},{"ticker":"CPTI11","tipo":"FII PAPEL B3","seguimento":"INFRA","gestora":"CAPITANIA","valor":5297.28,"Pre\u00e7o_M\u00e9dio":86.03,"Pre\u00e7o_Mercado":82.77,"Varia\u00e7\u00e3o":-0.037893758,"Qtd":64},{"ticker":"SNAG11","tipo":"FII PAPEL B3","seguimento":"AGRO","gestora":"SUNO","valor":5515.52,"Pre\u00e7o_M\u00e9dio":9.9,"Pre\u00e7o_Mercado":9.92,"Varia\u00e7\u00e3o":0.002020202,"Qtd":556},{"ticker":"COIN11","tipo":"FII PAPEL B3","seguimento":"ETF CRIPTO","gestora":"BUENA VISTA","valor":2947.28,"Pre\u00e7o_M\u00e9dio":70.2553,"Pre\u00e7o_Mercado":38.78,"Varia\u00e7\u00e3o":-0.4480128853,"Qtd":76}];
@@ -288,7 +312,7 @@
         }
         popularFiltros(); atualizarAbaProventos();
 
-        // ================= LÓGICA DE REBALANCEAMENTO =================
+        // ================= LÓGICA DE REBALANCEAMENTO (COM TABELA NOVA) =================
         const metricasPlanilha = {"BANCO": 0.0, "SEGURO": 0.0, "INFRA": 5.0, "LAJE": 10.0, "CRI": 20.0, "LOGISTICO": 20.0, "ELETRICO": 0.0, "ETF CRIPTO": 0.0, "TELECOM": 0.0, "URBANO": 20.0, "SHOPPING": 20.0, "FOFS": 0.0, "COMODITE": 0.0, "AGRO": 5.0, "SANEAMENTO": 0.0, "ACAO USA ETF": 0.0, "DESENV.": 0.0, "HIBRIDO": 0.0};
         let segmentTargets = {};
         let segmentsList = [...new Set(dadosCarteira.map(a => a.seguimento || 'Outros'))].sort();
@@ -302,6 +326,120 @@
                 segmentTargets[s] = defaultPct;
             }
         });
+
+        // Variáveis globais para a Tabela e Ordenação
+        let rebalanceDataArray = [];
+        let curSortCol = 'diff';
+        let sortAsc = false; // Começa ordenando decrescente
+
+        function buildRebalanceData() {
+            rebalanceDataArray = [];
+            let assetsBySeg = {};
+            dadosCarteira.forEach(a => {
+                let seg = a.seguimento || 'Outros';
+                if (!assetsBySeg[seg]) assetsBySeg[seg] = [];
+                assetsBySeg[seg].push(a);
+            });
+
+            for (let seg in assetsBySeg) {
+                let assets = assetsBySeg[seg];
+                let targetSegValue = carteiraTotal * (segmentTargets[seg] / 100);
+                let targetAssetValue = targetSegValue / assets.length; // Divide igualitário entre ativos do mesmo seguimento
+
+                assets.forEach(a => {
+                    let diff = targetAssetValue - a.valor;
+                    let pct_atual = carteiraTotal > 0 ? (a.valor / carteiraTotal) * 100 : 0;
+                    let target_pct = carteiraTotal > 0 ? (targetAssetValue / carteiraTotal) * 100 : 0;
+                    
+                    rebalanceDataArray.push({ 
+                        ticker: a.ticker || 'N/D', 
+                        tipo: a.tipo || 'N/D',
+                        seg: seg, 
+                        gestora: a.gestora || 'N/D',
+                        qtd: a.Qtd || 0,
+                        pm: a['Preço_Médio'] || 0,
+                        preco: a['Preço_Mercado'] || 0,
+                        var: a['Variação'] || 0,
+                        current: a.valor || 0,
+                        pct_atual: pct_atual,
+                        target_pct: target_pct,
+                        target: targetAssetValue, 
+                        diff: diff
+                    });
+                });
+            }
+        }
+
+        function renderTable() {
+            // Ordenação
+            rebalanceDataArray.sort((a, b) => {
+                let valA = a[curSortCol];
+                let valB = b[curSortCol];
+                if (typeof valA === 'string') valA = valA.toLowerCase();
+                if (typeof valB === 'string') valB = valB.toLowerCase();
+                if (valA < valB) return sortAsc ? -1 : 1;
+                if (valA > valB) return sortAsc ? 1 : -1;
+                return 0;
+            });
+
+            const tbody = document.getElementById('tabela-rebalanceamento');
+            tbody.innerHTML = '';
+
+            rebalanceDataArray.forEach(d => {
+                let tr = document.createElement('tr');
+                
+                let varPct = d.var * 100;
+                let varColor = varPct >= 0 ? "var(--green)" : "var(--red)";
+                let varText = (varPct >= 0 ? "+" : "") + varPct.toFixed(2).replace(".", ",") + "%";
+
+                let diffText = "";
+                let diffColor = "";
+
+                if (varPct >= 20) {
+                    diffText = `Vender (Lucro de ${varPct.toFixed(1).replace('.',',')}%)`;
+                    diffColor = "var(--red)";
+                } 
+                else if (d.current <= (d.target * 0.90) && d.preco <= d.pm) {
+                    diffText = `Comprar ${formataMoedaJS(d.target - d.current)}`;
+                    diffColor = "var(--green)";
+                } 
+                else if (d.current >= (d.target * 1.10) && d.preco >= d.pm) {
+                    diffText = `Vender (Acima do alvo)`;
+                    diffColor = "var(--red)";
+                } 
+                else {
+                    diffText = `Falta ${formataMoedaJS(d.target - d.current)}`;
+                    diffColor = "var(--text-muted)";
+                }
+
+                tr.innerHTML = `
+                    <td style="font-weight: 700; color: var(--text-main);">${d.ticker}</td>
+                    <td style="color: var(--text-muted);">${d.tipo}</td>
+                    <td style="color: var(--text-muted);">${d.seg}</td>
+                    <td style="color: var(--text-muted);">${d.gestora}</td>
+                    <td style="font-weight: 600; color: var(--primary);">${d.qtd}</td>
+                    <td style="font-weight: 500;">${formataMoedaJS(d.pm)}</td>
+                    <td style="font-weight: 500;">${formataMoedaJS(d.preco)}</td>
+                    <td style="color: ${varColor}; font-weight: 700;">${varText}</td>
+                    <td style="font-weight: 600;">${formataMoedaJS(d.current)}</td>
+                    <td style="font-weight: 500;">${d.pct_atual.toFixed(2).replace('.',',')}%</td>
+                    <td style="color: var(--text-muted);">${d.target_pct.toFixed(2).replace('.',',')}%</td>
+                    <td style="color: var(--text-muted);">${formataMoedaJS(d.target)}</td>
+                    <td style="color: ${diffColor}; font-weight: 600;">${diffText}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function sortTable(colName) {
+            if (curSortCol === colName) {
+                sortAsc = !sortAsc;
+            } else {
+                curSortCol = colName;
+                sortAsc = false;
+            }
+            renderTable();
+        }
 
         function drawRebalanceTab() {
             const container = document.getElementById('segment-inputs');
@@ -322,80 +460,8 @@
             alerta.innerText = `Soma atual da Estratégia: ${totalPct.toFixed(1)}%`;
             alerta.style.color = Math.abs(totalPct - 100) < 0.1 ? 'var(--green)' : 'var(--red)';
 
-            const tbody = document.getElementById('tabela-rebalanceamento');
-            tbody.innerHTML = '';
-
-            let assetsBySeg = {};
-            dadosCarteira.forEach(a => {
-                let seg = a.seguimento || 'Outros';
-                if (!assetsBySeg[seg]) assetsBySeg[seg] = [];
-                assetsBySeg[seg].push(a);
-            });
-
-            let rebalanceData = [];
-            for (let seg in assetsBySeg) {
-                let assets = assetsBySeg[seg];
-                let targetSegValue = carteiraTotal * (segmentTargets[seg] / 100);
-                let targetAssetValue = targetSegValue / assets.length;
-
-                assets.forEach(a => {
-                    let diff = targetAssetValue - a.valor;
-                    rebalanceData.push({ 
-                        ticker: a.ticker, 
-                        seg: seg, 
-                        qtd: a.Qtd || 0,
-                        current: a.valor, 
-                        target: targetAssetValue, 
-                        diff: diff,
-                        pm: a['Preço_Médio'] || 0,
-                        preco: a['Preço_Mercado'] || 0,
-                        var: a['Variação'] || 0
-                    });
-                });
-            }
-
-            rebalanceData.sort((a, b) => b.diff - a.diff);
-
-            rebalanceData.forEach(d => {
-                let tr = document.createElement('tr');
-                
-                let varPct = d.var * 100;
-                let varColor = varPct >= 0 ? "var(--green)" : "var(--red)";
-                let varText = (varPct >= 0 ? "+" : "") + varPct.toFixed(2).replace(".", ",") + "%";
-
-                let diffText = "";
-                let diffColor = "";
-
-                if (varPct >= 20) {
-                    diffText = `Vender (Lucro de ${varPct.toFixed(1).replace('.',',')}%)`;
-                    diffColor = "var(--red)";
-                } 
-                else if (d.current <= (d.target * 0.90) && d.preco <= d.pm) {
-                    diffText = `Comprar ${formataMoedaJS(d.target - d.current)}`;
-                    diffColor = "var(--green)";
-                } 
-                else if (d.current >= (d.target * 1.10) && d.preco >= d.pm) {
-                    diffText = `Vender ${formataMoedaJS(d.current - d.target)}`;
-                    diffColor = "var(--red)";
-                } 
-                else {
-                    diffText = "Aguardar";
-                    diffColor = "var(--text-muted)";
-                }
-
-                tr.innerHTML = `
-                    <td style="font-weight: 700; color: var(--text-main);">${d.ticker}</td>
-                    <td style="color: var(--text-muted);">${d.seg}</td>
-                    <td style="font-weight: 600; color: var(--primary);">${d.qtd}</td>
-                    <td style="font-weight: 500;">${formataMoedaJS(d.pm)}</td>
-                    <td style="font-weight: 500;">${formataMoedaJS(d.preco)}</td>
-                    <td style="color: ${varColor}; font-weight: 700;">${varText}</td>
-                    <td style="font-weight: 600;">${formataMoedaJS(d.current)}</td>
-                    <td style="color: var(--text-muted);">${formataMoedaJS(d.target)}</td>
-                    <td style="color: ${diffColor}; font-weight: 600;">${diffText}</td>
-                `;
-                tbody.appendChild(tr);
-            });
+            buildRebalanceData();
+            renderTable();
         }
 
         function updateTarget(seg, val) {
