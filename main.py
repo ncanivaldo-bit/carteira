@@ -148,7 +148,10 @@ if not df_res.empty:
 
 try: aba_carteira = planilha.worksheet("Carteira")
 except: aba_carteira = planilha.add_worksheet(title="Carteira", rows="200", cols="20")
-aba_carteira.batch_clear(["A:H"])
+
+# --- CORREÇÃO: Limpando a aba INTEIRA em vez de apenas um intervalo ---
+aba_carteira.clear() 
+
 if not df_res.empty:
     aba_carteira.update(range_name='A1', values=[df_res.columns.tolist()] + df_res.values.tolist(), value_input_option='USER_ENTERED')
 
