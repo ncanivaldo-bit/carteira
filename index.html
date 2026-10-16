@@ -299,7 +299,7 @@
         popularFiltros(); atualizarAbaProventos();
 
         // ================= LÓGICA DE REBALANCEAMENTO =================
-        const metricasPlanilha = {"BANCO": 0.0, "SEGURO": 0.0, "INFRAESTRUTURA": 5.0, "LAJE": 10.0, "CRI": 20.0, "LOGISTICO": 20.0, "ELETRICO": 0.0, "BITCOIN": 0.0, "TELECOM": 0.0, "URBANO": 20.0, "SHOPPING": 20.0, "FOFS": 0.0, "COMODITE": 0.0, "FIAGRO": 5.0, "SANEAMENTO": 0.0, "ACAO USA ETF": 0.0, "DESENV": 0.0, "HIBRIDO": 0.0};
+        const metricasPlanilha = {"BANCO": 0.0, "SEGURO": 0.0, "INFRAESTRUTURA": 5.0, "LAJE": 5.0, "CRI": 20.0, "LOGISTICO": 20.0, "ELETRICO": 0.0, "BITCOIN": 3.0, "TELECOM": 0.0, "URBANO": 20.0, "SHOPPING": 20.0, "FOFS": 0.0, "COMODITE": 0.0, "FIAGRO": 5.0, "SANEAMENTO": 0.0, "ACAO USA ETF": 0.0, "DESENV": 0.0, "HIBRIDO": 0.0};
         let segmentTargets = {};
         let segmentsList = [...new Set(dadosCarteira.map(a => a.seguimento || 'Outros'))].sort();
         let defaultPct = segmentsList.length > 0 ? (100 / segmentsList.length) : 0;
