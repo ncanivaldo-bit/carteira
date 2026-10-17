@@ -1,3 +1,408 @@
+import os
+import json
+import time
+import gspread
+import pandas as pd
+import yfinance as yf
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from dateutil.relativedelta import relativedelta
+from google.oauth2.service_account import Credentials
+# ==============================================================================
+# 1. AUTENTICAÇÃO E CONEXÃO
+# ==============================================================================
+print("Autenticando no Google Sheets...")
+chave_json_str = os.environ.get('GCP_CREDENTIALS')
+if not chave_json_str:
+    raise ValueError("ERRO: A variável de ambiente 'GCP_CREDENTIALS' não foi encontrada.")
+credenciais_dict = json.loads(chave_json_str)
+scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+creds = Credentials.from_service_account_info(credenciais_dict, scopes=scopes)
+gc = gspread.authorize(creds)
+planilha = gc.open("base")
+aba_mov = planilha.worksheet("Movimentacao")
+aba_hist = planilha.worksheet("Hist_Precos")
+conversao_tickers = {"MALL11": "PMLL11", "CVBI11": "PCIP11", "BOML": "BPML11"}
+ticker_origem = {novo: antigo for antigo, novo in conversao_tickers.items()}
+# ==============================================================================
+# 2. CARREGAMENTO E CORREÇÃO DE DATAS DA MOVIMENTAÇÃO
+# ==============================================================================
+df_mov_records = pd.DataFrame(aba_mov.get_all_records(value_render_option='UNFORMATTED_VALUE'))
+def converter_data(val):
+    if pd.isna(val) or val == '':
+        return pd.NaT
+    if isinstance(val, (int, float)):
+        try:
+            return pd.to_datetime('1899-12-30') + pd.to_timedelta(val, unit='D')
+        except (ValueError, TypeError):
+            return pd.NaT
+    try:
+        return pd.to_datetime(val, dayfirst=True, errors='coerce')
+    except (ValueError, TypeError):
+        return pd.NaT
+if 'Data' in df_mov_records.columns:
+    df_mov_records['Data'] = df_mov_records['Data'].apply(converter_data)
+# ==============================================================================
+# 3. MOTOR DE ATUALIZAÇÃO HISTÓRICA E PLANILHA (YFINANCE EM LOTE)
+# ==============================================================================
+print("Atualizando histórico de preços (Yahoo Finance em lote)...")
+if 'Ticker' in df_mov_records.columns:
+    ativos_yf = set([conversao_tickers.get(str(tk).strip(), str(tk).strip()) for tk in df_mov_records['Ticker'].unique() if str(tk).strip() != ''])
+else:
+    ativos_yf = set()
+df_hist = pd.DataFrame(aba_hist.get_all_records()) if aba_hist.get_all_values() and aba_hist.get_all_values()[0][0] == 'Chave_Merge' else pd.DataFrame()
+mes_atual_str = datetime.now().strftime('%Y-%m')
+novas_linhas = []
+if ativos_yf:
+    datas_inicio_por_ticker = {}
+    min_data_inicio = datetime.now()
+    for tk in ativos_yf:
+        df_tk_hist = df_hist[df_hist['Ticker'] == tk] if not df_hist.empty and 'Ticker' in df_hist.columns else pd.DataFrame()
+        data_inicio = datetime.strptime(df_tk_hist['Chave_Merge'].max(), '%Y-%m') + relativedelta(months=1) if not df_tk_hist.empty else datetime(2023, 5, 1)
+        data_inicio = max(data_inicio, datetime(2023, 5, 1))
+        data_inicio = data_inicio.replace(day=1)
+        if data_inicio.strftime('%Y-%m') <= mes_atual_str:
+            datas_inicio_por_ticker[tk] = data_inicio
+            if data_inicio < min_data_inicio:
+                min_data_inicio = data_inicio
+    if datas_inicio_por_ticker:
+        tickers_yf_lista = [f"{tk}.SA" for tk in datas_inicio_por_ticker.keys()]
+        try:
+            dados_yf = yf.download(tickers_yf_lista, start=min_data_inicio.strftime('%Y-%m-%d'), progress=False, auto_adjust=True)
+            if not dados_yf.empty:
+                for tk in datas_inicio_por_ticker.keys():
+                    tk_yf = f"{tk}.SA"
+                    data_limite = datas_inicio_por_ticker[tk]
+                    try:
+                        if len(tickers_yf_lista) == 1:
+                            precos = dados_yf['Close']
+                            if isinstance(precos, pd.DataFrame):
+                                precos = precos.iloc[:, 0]
+                        else:
+                            if isinstance(dados_yf.columns, pd.MultiIndex):
+                                if 'Close' in dados_yf.columns.get_level_values(0) and tk_yf in dados_yf.columns.get_level_values(1):
+                                    precos = dados_yf['Close'][tk_yf]
+                                elif 'Close' in dados_yf.columns.get_level_values(1) and tk_yf in dados_yf.columns.get_level_values(0):
+                                    precos = dados_yf[tk_yf]['Close']
+                                else:
+                                    continue
+                            else:
+                                precos = dados_yf['Close'] if 'Close' in dados_yf.columns else pd.Series(dtype=float)
+                        if not precos.empty:
+                            precos = precos.dropna()
+                            for data, preco in precos.resample('ME').last().dropna().items():
+                                if data >= data_limite and preco > 0:
+                                    novas_linhas.append([data.strftime('%Y-%m'), tk, round(float(preco), 2)])
+                    except (ValueError, TypeError, KeyError) as e_tk:
+                        print(f"Aviso: Não foi possível processar dados de {tk_yf}: {e_tk}")
+        except Exception as e:
+            print(f"Aviso: Erro ao baixar dados em lote do Yahoo Finance: {e}")
+if novas_linhas:
+    aba_hist.append_rows(novas_linhas)
+# ==============================================================================
+# 4. ATUALIZAÇÃO DO CADASTRO (INF_ATIVOS)
+# ==============================================================================
+print("Atualizando aba Inf_Ativos...")
+try:
+    aba_inf = planilha.worksheet("Inf_Ativos")
+except:
+    aba_inf = planilha.add_worksheet(title="Inf_Ativos", rows="1000", cols="20")
+if not df_mov_records.empty and 'Ticker' in df_mov_records.columns:
+    df_inf = df_mov_records.iloc[:, [0, 8, 9, 10, 11]].copy()
+    nome_col_ticker = df_inf.columns[0]
+    df_inf[nome_col_ticker] = df_inf[nome_col_ticker].astype(str).str.strip().replace(conversao_tickers)
+    df_inf = df_inf[df_inf[nome_col_ticker] != ""].drop_duplicates(subset=[nome_col_ticker], keep='last').sort_values(by=nome_col_ticker)
+    df_inf['Preço_Atual'] = df_inf[nome_col_ticker].apply(lambda tk: f'=IFERROR(GOOGLEFINANCE("BVMF:{tk}"; "price"); 0)')
+    aba_inf.clear()
+    aba_inf.update(range_name='A1', values=[df_inf.columns.values.tolist()] + df_inf.values.tolist(), value_input_option='USER_ENTERED')
+# ==============================================================================
+# 5. MOTOR INTELIGENTE DE CÁLCULO DE PREÇO MÉDIO
+# ==============================================================================
+print("Processando histórico e calculando Preços Médios...")
+def garantir_inteiro(x):
+    try:
+        if isinstance(x, (int, float)): return int(x)
+        return int(float(str(x).replace('R$', '').replace('.', '').replace(',', '.').strip()))
+    except: return 0
+def garantir_valor_financeiro(x):
+    try:
+        if isinstance(x, (int, float)): return float(x)
+        return float(str(x).replace('R$', '').replace('.', '').replace(',', '.').strip())
+    except: return 0.0
+df_mov_calc = df_mov_records.copy()
+df_mov_calc = df_mov_calc.sort_values(by=['Data', 'Movimentação']).reset_index(drop=True)
+pm_dict = {}
+historico_operacoes = []
+ordem_execucao = 0
+for idx, row in df_mov_calc.iterrows():
+    tk = str(row.get('Ticker', '')).strip()
+    if not tk: continue
+    mov = str(row.get('Movimentação', '')).strip().title()
+    es = str(row.get('Entrada/Saída', row.get('Entrada/Saida', ''))).strip().title()
+    qtd = garantir_inteiro(row.get('Quantidade', 0))
+    valor_op = garantir_valor_financeiro(row.get('Valor da Operação', 0))
+    preco_unit = garantir_valor_financeiro(row.get('Preço unitário', 0))
+    if valor_op == 0 and preco_unit > 0: valor_op = qtd * preco_unit
+    if tk not in pm_dict: pm_dict[tk] = {'qtd': 0, 'custo_acumulado': 0.0, 'pm': 0.0}
+    if mov == 'Compra' and es == 'Credito':
+        pm_dict[tk]['qtd'] += qtd
+        pm_dict[tk]['custo_acumulado'] += valor_op
+        if pm_dict[tk]['qtd'] > 0: pm_dict[tk]['pm'] = pm_dict[tk]['custo_acumulado'] / pm_dict[tk]['qtd']
+    elif mov in ['Venda', 'Atualização'] and es == 'Debito':
+        pm_dict[tk]['qtd'] -= qtd
+        if pm_dict[tk]['qtd'] <= 0:
+            pm_dict[tk]['qtd'] = 0
+            pm_dict[tk]['custo_acumulado'] = 0.0
+        else:
+            pm_dict[tk]['custo_acumulado'] = pm_dict[tk]['qtd'] * pm_dict[tk]['pm']
+    elif mov == 'Desdobro' and es == 'Credito':
+        pm_dict[tk]['qtd'] += qtd
+        if pm_dict[tk]['qtd'] > 0: pm_dict[tk]['pm'] = pm_dict[tk]['custo_acumulado'] / pm_dict[tk]['qtd']
+    elif mov == 'Atualização' and es == 'Credito':
+        pm_dict[tk]['qtd'] += qtd
+        if valor_op > 0:
+            pm_dict[tk]['custo_acumulado'] += valor_op
+        else:
+            tk_antigo = ticker_origem.get(tk)
+            if tk_antigo and tk_antigo in pm_dict:
+                pm_dict[tk]['custo_acumulado'] += (qtd * pm_dict[tk_antigo]['pm'])
+                pm_dict[tk_antigo]['qtd'] -= qtd
+                if pm_dict[tk_antigo]['qtd'] <= 0:
+                    pm_dict[tk_antigo]['qtd'] = 0
+                    pm_dict[tk_antigo]['custo_acumulado'] = 0.0
+                else:
+                    pm_dict[tk_antigo]['custo_acumulado'] = pm_dict[tk_antigo]['qtd'] * pm_dict[tk_antigo]['pm']
+                if pd.notna(row['Data']):
+                    ordem_execucao += 1
+                    historico_operacoes.append({'Ordem': ordem_execucao, 'Data': row['Data'], 'AnoMes': row['Data'].strftime('%Y-%m'), 'Ticker': tk_antigo, 'Qtd': pm_dict[tk_antigo]['qtd'], 'PM': pm_dict[tk_antigo]['pm'], 'Total_Investido': pm_dict[tk_antigo]['custo_acumulado']})
+        if pm_dict[tk]['qtd'] > 0: pm_dict[tk]['pm'] = pm_dict[tk]['custo_acumulado'] / pm_dict[tk]['qtd']
+    ordem_execucao += 1
+    if pd.notna(row['Data']):
+        historico_operacoes.append({'Ordem': ordem_execucao, 'Data': row['Data'], 'AnoMes': row['Data'].strftime('%Y-%m'), 'Ticker': tk, 'Qtd': pm_dict[tk]['qtd'], 'PM': pm_dict[tk]['pm'], 'Total_Investido': pm_dict[tk]['custo_acumulado']})
+# ==============================================================================
+# 6. CONSOLIDAÇÃO - SALDO GERAL (ABA CARTEIRA)
+# ==============================================================================
+resultados = []
+for tk, dados in pm_dict.items():
+    if tk not in conversao_tickers.keys() and dados['qtd'] > 0:
+        resultados.append({'Ticker': tk, 'Qtd_Real': dados['qtd'], 'Preço_Médio': dados['pm'], 'Total_Investido': dados['custo_acumulado']})
+df_resultado = pd.DataFrame(resultados)
+if not df_resultado.empty:
+    df_resultado = df_resultado.sort_values(by='Total_Investido', ascending=False).reset_index(drop=True)
+    df_resultado['Qtd_Real'] = df_resultado['Qtd_Real'].astype(int)
+    df_resultado['Preço_Médio'] = df_resultado['Preço_Médio'].astype(float).round(4)
+    df_resultado['Total_Investido'] = df_resultado['Total_Investido'].astype(float).round(2)
+    df_resultado['Preço_Mercado'] = df_resultado['Ticker'].apply(lambda tk: f'=IFERROR(GOOGLEFINANCE("BVMF:{tk}"; "price"); 0)')
+    df_resultado['Patrimonio_Liquido'] = [f'=B{i+2}*E{i+2}' for i in range(len(df_resultado))]
+    df_resultado['Variação'] = [f'=IFERROR((F{i+2}/D{i+2})-1; 0)' for i in range(len(df_resultado))]
+    df_resultado['Classificacao'] = [f'=IFERROR(VLOOKUP(A{i+2}; Inf_Ativos!$A$2:$F; 2; FALSE); "")' for i in range(len(df_resultado))]
+    df_resultado['Tipo'] = [f'=IFERROR(VLOOKUP(A{i+2}; Inf_Ativos!$A$2:$F; 3; FALSE); "")' for i in range(len(df_resultado))]
+    df_resultado['Seguimento'] = [f'=IFERROR(VLOOKUP(A{i+2}; Inf_Ativos!$A$2:$F; 4; FALSE); "")' for i in range(len(df_resultado))]
+    df_resultado['Gestora'] = [f'=IFERROR(VLOOKUP(A{i+2}; Inf_Ativos!$A$2:$F; 5; FALSE); "")' for i in range(len(df_resultado))]
+    try: aba_carteira = planilha.worksheet("Carteira")
+    except: aba_carteira = planilha.add_worksheet(title="Carteira", rows="1000", cols="20")
+    aba_carteira.clear()
+    aba_carteira.update(range_name='A1', values=[df_resultado.columns.values.tolist()] + df_resultado.values.tolist(), value_input_option='USER_ENTERED')
+    print("-> Aba 'Carteira' atualizada!")
+# ==============================================================================
+# 7. CONSOLIDAÇÃO - HISTÓRICO MENSAL (ABA PM_MENSAL)
+# ==============================================================================
+if historico_operacoes:
+    df_hist_op = pd.DataFrame(historico_operacoes)
+    df_fechamento_mes = df_hist_op.sort_values('Ordem').groupby(['Ticker', 'AnoMes']).last().reset_index()
+    mes_min = df_fechamento_mes['AnoMes'].min()
+    meses_totais = pd.period_range(start=mes_min, end=mes_atual_str, freq='M').strftime('%Y-%m').tolist()
+    linhas_completas = []
+    for tk in df_fechamento_mes['Ticker'].unique():
+        mes_inicial = df_fechamento_mes[df_fechamento_mes['Ticker'] == tk]['AnoMes'].min()
+        meses_ativos = [m for m in meses_totais if m >= mes_inicial]
+        for m in meses_ativos: linhas_completas.append({'Ticker': tk, 'AnoMes': m})
+    df_grid = pd.DataFrame(linhas_completas)
+    df_pm_mensal = pd.merge(df_grid, df_fechamento_mes[['Ticker', 'AnoMes', 'Qtd', 'PM', 'Total_Investido']], on=['Ticker', 'AnoMes'], how='left')
+    df_pm_mensal = df_pm_mensal.sort_values(by=['Ticker', 'AnoMes'])
+    df_pm_mensal['Qtd'] = df_pm_mensal.groupby('Ticker')['Qtd'].ffill()
+    df_pm_mensal['PM'] = df_pm_mensal.groupby('Ticker')['PM'].ffill()
+    df_pm_mensal['Total_Investido'] = df_pm_mensal.groupby('Ticker')['Total_Investido'].ffill()
+    df_pm_mensal = df_pm_mensal[df_pm_mensal['Qtd'] > 0].copy()
+    df_pm_mensal['Ticker'] = df_pm_mensal['Ticker'].astype(str).str.strip().replace(conversao_tickers)
+    df_pm_mensal = df_pm_mensal.groupby(['AnoMes', 'Ticker'], as_index=False).agg({'Qtd': 'sum', 'Total_Investido': 'sum'})
+    df_pm_mensal['PM'] = df_pm_mensal['Total_Investido'] / df_pm_mensal['Qtd']
+    df_hist_procv = pd.DataFrame(aba_hist.get_all_records(value_render_option='UNFORMATTED_VALUE'))
+    if not df_hist_procv.empty:
+        colunas = df_hist_procv.columns
+        df_procv = df_hist_procv[[colunas[0], colunas[1], colunas[2]]].copy()
+        df_procv.columns = ['AnoMes', 'Ticker', 'Cotação']
+        df_procv['Ticker'] = df_procv['Ticker'].astype(str).str.strip().replace(conversao_tickers)
+        df_procv = df_procv.drop_duplicates(subset=['AnoMes', 'Ticker'], keep='last')
+        df_pm_mensal = pd.merge(df_pm_mensal, df_procv, on=['AnoMes', 'Ticker'], how='left')
+        df_pm_mensal['Cotação'] = pd.to_numeric(df_pm_mensal['Cotação'], errors='coerce').fillna(0.0)
+    else:
+        df_pm_mensal['Cotação'] = 0.0
+    df_pm_mensal['Qtd'] = df_pm_mensal['Qtd'].astype(int)
+    df_pm_mensal['Valor_Mercado'] = df_pm_mensal['Qtd'] * df_pm_mensal['Cotação']
+    df_pm_mensal['PM'] = df_pm_mensal['PM'].astype(float).round(4)
+    df_pm_mensal['Total_Investido'] = df_pm_mensal['Total_Investido'].astype(float).round(2)
+    df_pm_mensal['Cotação'] = df_pm_mensal['Cotação'].astype(float).round(4)
+    df_pm_mensal['Valor_Mercado'] = df_pm_mensal['Valor_Mercado'].astype(float).round(2)
+    df_pm_mensal = df_pm_mensal.sort_values(by=['AnoMes', 'Ticker']).reset_index(drop=True)
+    df_pm_mensal = df_pm_mensal[['AnoMes', 'Ticker', 'Qtd', 'PM', 'Cotação', 'Total_Investido', 'Valor_Mercado']]
+    for i, row in df_pm_mensal.iterrows():
+        if row['AnoMes'] == mes_atual_str:
+            tk = row['Ticker']
+            df_pm_mensal.at[i, 'Cotação'] = f'=IFERROR(GOOGLEFINANCE("BVMF:{tk}"; "price"); 0)'
+            df_pm_mensal.at[i, 'Valor_Mercado'] = f'=C{i+2}*E{i+2}'
+    df_pm_mensal['AnoMes'] = df_pm_mensal['AnoMes'].apply(lambda x: f"'{x}")
+    try: aba_pm_mensal = planilha.worksheet("Pm_mensal")
+    except: aba_pm_mensal = planilha.add_worksheet(title="Pm_mensal", rows="5000", cols="10")
+    aba_pm_mensal.clear()
+    aba_pm_mensal.update(range_name='A1', values=[df_pm_mensal.columns.values.tolist()] + df_pm_mensal.values.tolist(), value_input_option='USER_ENTERED')
+    print("-> Aba 'Pm_mensal' atualizada!")
+# ==============================================================================
+# 8. LEITURA DA ABA DE MÉTRICAS / MTERICAS PARA REBALANCEAMENTO
+# ==============================================================================
+print("Buscando Alvos de Rebalanceamento (Aba Metricas)...")
+try:
+    try:
+        aba_metricas = planilha.worksheet("Metricas")
+    except gspread.exceptions.WorksheetNotFound:
+        aba_metricas = planilha.worksheet("Mtericas")
+    records_metricas = aba_metricas.get_all_records(value_render_option='UNFORMATTED_VALUE')
+    dict_metricas = {}
+    for row in records_metricas:
+        keys = list(row.keys())
+        if len(keys) >= 2:
+            seg = str(row[keys[0]]).strip()
+            pct_raw = row[keys[1]]
+            try:
+                pct_val = float(pct_raw)
+                if 0 < pct_val <= 1.0:
+                    pct_val *= 100
+                dict_metricas[seg] = round(pct_val, 2)
+            except (ValueError, TypeError):
+                pass
+    dados_metricas_js = json.dumps(dict_metricas)
+except Exception as e:
+    print(f"Aviso: Aba 'Metricas' não encontrada ou vazia. O Dashboard usará pesos iguais. ({e})")
+    dados_metricas_js = "{}"
+# ==============================================================================
+# 9. GERAÇÃO DO DASHBOARD E INSIGHTS
+# ==============================================================================
+print("Aguardando o Sheets processar as fórmulas (5s)...")
+time.sleep(5)
+print("Gerando o Dashboard...")
+df_pm_mensal_original = pd.DataFrame(planilha.worksheet("Pm_mensal").get_all_records(value_render_option='UNFORMATTED_VALUE'))
+df_pm_mensal_original['AnoMes'] = df_pm_mensal_original['AnoMes'].astype(str).str.replace("'", "")
+df_grafico = df_pm_mensal_original.groupby('AnoMes', as_index=False).agg({'Total_Investido': 'sum', 'Valor_Mercado': 'sum'})
+patrimonio_valores = pd.to_numeric(df_grafico['Valor_Mercado'], errors='coerce').fillna(0.0)
+investido_valores = pd.to_numeric(df_grafico['Total_Investido'], errors='coerce').fillna(0.0)
+patrimonio_atual = patrimonio_valores.iloc[-1] if not patrimonio_valores.empty else 0.0
+investido_atual = investido_valores.iloc[-1] if not investido_valores.empty else 0.0
+df_carteira_sheet = pd.DataFrame(planilha.worksheet("Carteira").get_all_records(value_render_option='UNFORMATTED_VALUE'))
+df_pizza = df_carteira_sheet.copy()
+def get_col(df, name_hints, default_val=0):
+    for hint in name_hints:
+        col = [c for c in df.columns if hint in str(c).lower()]
+        if col: return df[col[0]]
+    return default_val
+df_pizza['ticker'] = get_col(df_pizza, ['ticker', 'ativo'], 'Outros')
+df_pizza['tipo'] = df_pizza.get('Tipo', 'Outros')
+df_pizza['seguimento'] = df_pizza.get('Seguimento', 'Outros')
+df_pizza['gestora'] = df_pizza.get('Gestora', 'Outros')
+df_pizza['Preço_Médio'] = get_col(df_pizza, ['médio', 'medio', 'pm'], 0)
+df_pizza['Preço_Mercado'] = get_col(df_pizza, ['mercado', 'cotação', 'cotacao'], 0)
+df_pizza['Variação'] = get_col(df_pizza, ['varia', 'var'], 0)
+qtd_col = [c for c in df_pizza.columns if 'qtd' in str(c).lower()][0] if any('qtd' in str(c).lower() for c in df_pizza.columns) else df_pizza.columns[1]
+df_pizza['Qtd'] = pd.to_numeric(df_pizza[qtd_col], errors='coerce').fillna(0)
+col_patrimonio = [c for c in df_pizza.columns if 'patrimonio' in str(c).lower() or 'patrimônio' in str(c).lower() or 'liquido' in str(c).lower()]
+if col_patrimonio:
+    df_pizza['valor'] = pd.to_numeric(df_pizza[col_patrimonio[0]], errors='coerce').fillna(0)
+else:
+    preco_col = [c for c in df_pizza.columns if 'mercado' in str(c).lower()][0]
+    df_pizza['valor'] = df_pizza['Qtd'] * pd.to_numeric(df_pizza[preco_col], errors='coerce').fillna(0)
+mapa_tipos = dict(zip(df_pizza['ticker'].astype(str).str.strip(), df_pizza['tipo']))
+mapa_seguimentos = dict(zip(df_pizza['ticker'].astype(str).str.strip(), df_pizza['seguimento']))
+try:
+    df_mov_prov = df_mov_records[df_mov_records['Movimentação'].astype(str).str.strip().str.title().isin(['Juros Sobre Capital Próprio', 'Rendimento', 'Jcp'])].copy()
+    col_valor_op = [c for c in df_mov_prov.columns if 'valor' in str(c).lower()][0]
+    df_mov_prov['Valor_Num'] = pd.to_numeric(df_mov_prov[col_valor_op], errors='coerce').fillna(0.0)
+    cols_mov_lower = [str(c).lower() for c in df_mov_prov.columns]
+    if 'ativo' in cols_mov_lower: col_ticker_mov = df_mov_prov.columns[cols_mov_lower.index('ativo')]
+    elif 'ticker' in cols_mov_lower: col_ticker_mov = df_mov_prov.columns[cols_mov_lower.index('ticker')]
+    else: col_ticker_mov = df_mov_prov.columns[0]
+    df_mov_prov['ticker'] = df_mov_prov[col_ticker_mov].astype(str).str.strip()
+    df_mov_prov['tipo'] = df_mov_prov['ticker'].map(mapa_tipos).fillna('Outros')
+    df_mov_prov['seguimento'] = df_mov_prov['ticker'].map(mapa_seguimentos).fillna('Outros')
+    if 'Data' in df_mov_prov.columns:
+        df_mov_prov['Data_Dt'] = df_mov_prov['Data'].apply(converter_data)
+        data_limite_12m = datetime.now() - relativedelta(years=1)
+        df_mov_prov['is_12m'] = df_mov_prov['Data_Dt'] >= data_limite_12m
+        df_mov_prov['AnoMes'] = df_mov_prov['Data_Dt'].dt.to_period('M').astype(str)
+        ultimo_mes_prov = df_mov_prov['AnoMes'].max()
+        ultimos_proventos = df_mov_prov[df_mov_prov['AnoMes'] == ultimo_mes_prov]['Valor_Num'].sum() if pd.notna(ultimo_mes_prov) else 0.0
+    else:
+        df_mov_prov['is_12m'] = True
+        df_mov_prov['AnoMes'] = "N/D"
+        ultimos_proventos = 0.0
+    dividendos_totais = df_mov_prov['Valor_Num'].sum()
+    dividendos_12m = df_mov_prov.loc[df_mov_prov['is_12m'], 'Valor_Num'].sum()
+    df_export_prov = df_mov_prov[['AnoMes', 'Valor_Num', 'ticker', 'tipo', 'seguimento', 'is_12m']].rename(columns={'Valor_Num': 'valor'})
+    dados_proventos_raw_js = df_export_prov.to_json(orient='records')
+except Exception as e:
+    dividendos_totais, dividendos_12m, ultimos_proventos = 0.0, 0.0, 0.0
+    dados_proventos_raw_js = "[]"
+ganho_capital = patrimonio_atual - investido_atual
+lucro_total = ganho_capital + dividendos_totais
+rentabilidade_total_pct = (lucro_total / investido_atual * 100) if investido_atual > 0 else 0
+var_patrimonio_pct = (ganho_capital / investido_atual * 100) if investido_atual > 0 else 0
+pct_ultimos_proventos = (ultimos_proventos / investido_atual * 100) if investido_atual > 0 else 0
+if len(df_grafico) >= 12:
+    inv_12m_atras = pd.to_numeric(df_grafico.iloc[-12]['Total_Investido'], errors='coerce')
+    pat_12m_atras = pd.to_numeric(df_grafico.iloc[-12]['Valor_Mercado'], errors='coerce')
+    rentabilidade_12m_pct = ((patrimonio_atual - pat_12m_atras + dividendos_12m) / inv_12m_atras * 100) if inv_12m_atras > 0 else rentabilidade_total_pct
+else:
+    rentabilidade_12m_pct = rentabilidade_total_pct
+# ----------------- INSIGHTS DE IA -----------------
+insights_ia = []
+if investido_atual > 0:
+    yoc = (dividendos_totais / investido_atual) * 100
+    insights_ia.append(f"🔥 Seu <b>Yield on Cost (Histórico)</b> está em <b>{yoc:.2f}%</b>. Esse é o rendimento real do seu dinheiro!")
+try:
+    idx_max = pd.to_numeric(df_pizza['Variação'], errors='coerce').idxmax()
+    if pd.notna(idx_max):
+        campeao_tk = df_pizza.loc[idx_max, 'ticker']
+        campeao_var = df_pizza.loc[idx_max, 'Variação'] * 100
+        if campeao_var > 0:
+            insights_ia.append(f"🏆 O ativo campeão da carteira hoje é <b>{campeao_tk}</b>, com <b>{campeao_var:.2f}%</b> de lucro.")
+except:
+    pass
+html_insights = "".join([f"<li style='margin-bottom: 6px;'>{ins}</li>" for ins in insights_ia])
+# Sinais e Cores
+cor_lucro = "text-green" if lucro_total >= 0 else "text-red"
+cor_ganho = "text-green" if ganho_capital >= 0 else "text-red"
+cor_rent_12m = "text-green" if rentabilidade_12m_pct >= 0 else "text-red"
+cor_rent_total = "text-green" if rentabilidade_total_pct >= 0 else "text-red"
+cor_var_pat = "text-green" if var_patrimonio_pct >= 0 else "text-red"
+sinal_rent_12m = "▲" if rentabilidade_12m_pct >= 0 else "▼"
+sinal_rent_total = "▲" if rentabilidade_total_pct >= 0 else "▼"
+sinal_var_pat = "▲" if var_patrimonio_pct >= 0 else "▼"
+def formata_moeda(valor):
+    sinal = "-" if valor < 0 else ""
+    return f"{sinal}R$ {abs(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+str_patrimonio = formata_moeda(patrimonio_atual)
+str_investido = formata_moeda(investido_atual)
+str_lucro = formata_moeda(lucro_total)
+str_ganho_capital = formata_moeda(ganho_capital)
+str_dividendos_total = formata_moeda(dividendos_totais)
+str_dividendos_12m = formata_moeda(dividendos_12m)
+str_ultimos_proventos = formata_moeda(ultimos_proventos)
+str_pct_ultimos_proventos = f"{pct_ultimos_proventos:.2f}%".replace(".", ",")
+str_rentabilidade_total = f"{rentabilidade_total_pct:.2f}%".replace(".", ",")
+str_rentabilidade_12m = f"{rentabilidade_12m_pct:.2f}%".replace(".", ",")
+str_var_patrimonio = f"{sinal_var_pat} {abs(var_patrimonio_pct):.2f}%".replace(".", ",")
+meses_js = json.dumps(df_grafico['AnoMes'].tolist())
+valor_aplicado_js = json.dumps(pd.to_numeric(df_grafico['Total_Investido'], errors='coerce').fillna(0.0).tolist())
+valor_mercado_js = json.dumps(pd.to_numeric(df_grafico['Valor_Mercado'], errors='coerce').fillna(0.0).tolist())
+dados_carteira_js = df_pizza[['ticker', 'tipo', 'seguimento', 'gestora', 'valor', 'Preço_Médio', 'Preço_Mercado', 'Variação', 'Qtd']].fillna(0).to_json(orient='records')
 html_template = """<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -18,11 +423,11 @@ html,body{margin:0}
 body{
   background:radial-gradient(1200px 600px at 10% -10%,rgba(59,130,246,.18),transparent 60%),
              radial-gradient(900px 500px at 100% 0%,rgba(139,92,246,.14),transparent 60%),var(--bg);
+  background-attachment:fixed;
   color:var(--text);font-family:'Inter','Segoe UI',Roboto,Arial,sans-serif;
   height:100vh;overflow:hidden;display:flex;flex-direction:column;padding:14px 22px;
 }
 .text-green{color:var(--green)}.text-red{color:var(--red)}
-/* HEADER */
 header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;
   padding:6px 0 14px;margin-bottom:14px;border-bottom:1px solid var(--border);flex-shrink:0}
 .brand{display:flex;align-items:center;gap:12px}
@@ -31,7 +436,7 @@ header{display:flex;justify-content:space-between;align-items:center;gap:16px;fl
 .brand h1{font-size:16px;margin:0;font-weight:700;letter-spacing:.2px}
 .brand small{color:var(--muted);font-size:11.5px}
 .nav-links{display:flex;gap:6px;background:rgba(255,255,255,.04);padding:4px;border-radius:12px;border:1px solid var(--border)}
-.nav-links a{color:var(--muted);text-decoration:none;font-size:13px;font-weight:600;cursor:pointer;padding:8px 16px;border-radius:9px;transition:.2s;display:flex;gap:7px;align-items:center}
+.nav-links a{color:var(--muted);text-decoration:none;font-size:13px;font-weight:600;cursor:pointer;padding:8px 16px;border-radius:9px;transition:.2s;display:flex;gap:7px;align-items:center;white-space:nowrap}
 .nav-links a:hover{color:var(--text)}
 .nav-links a.active{background:linear-gradient(135deg,var(--primary),#2563eb);color:#fff;box-shadow:0 4px 14px rgba(59,130,246,.4)}
 .header-buttons{display:flex;gap:8px;align-items:center}
@@ -40,7 +445,6 @@ header{display:flex;justify-content:space-between;align-items:center;gap:16px;fl
 .btn-primary{background:linear-gradient(135deg,var(--primary),#2563eb);border:none;color:#fff;box-shadow:0 4px 14px rgba(59,130,246,.35)}
 .btn-primary:hover{filter:brightness(1.12);background:linear-gradient(135deg,var(--primary),#2563eb)}
 .stamp{font-size:11px;color:var(--muted);text-align:right;line-height:1.3}
-/* LAYOUT */
 .tab-content{display:none;flex-grow:1;flex-direction:column;overflow-y:auto;padding-right:6px;animation:fade .35s ease}
 .tab-content.active{display:flex}
 @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -51,8 +455,9 @@ header{display:flex;justify-content:space-between;align-items:center;gap:16px;fl
 .grid-1-1{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;flex-shrink:0}
 .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px;flex-shrink:0}
 .card{background:var(--card);backdrop-filter:blur(12px);border:1px solid var(--border);border-radius:16px;padding:16px 20px;
-  display:flex;flex-direction:column;justify-content:space-between;box-shadow:0 10px 30px -12px rgba(0,0,0,.6);position:relative;overflow:hidden}
-.card.hover:hover{border-color:rgba(59,130,246,.4);transform:translateY(-2px);transition:.2s}
+  display:flex;flex-direction:column;justify-content:space-between;box-shadow:0 10px 30px -12px rgba(0,0,0,.6);position:relative;overflow:hidden;min-width:0}
+.card.hover{transition:.2s}
+.card.hover:hover{border-color:rgba(59,130,246,.4);transform:translateY(-2px)}
 .kpi-title{font-size:12px;color:var(--muted);font-weight:600;margin-bottom:8px;text-transform:uppercase;letter-spacing:.6px}
 .kpi-value{font-size:24px;font-weight:800;display:flex;align-items:baseline;flex-wrap:wrap;gap:4px;letter-spacing:-.3px}
 .kpi-sub{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;margin-top:12px;gap:8px}
@@ -69,17 +474,14 @@ header{display:flex;justify-content:space-between;align-items:center;gap:16px;fl
 .seg-toggle{display:flex;background:rgba(255,255,255,.05);border-radius:9px;padding:3px;border:1px solid var(--border)}
 .seg-toggle button{background:transparent;border:none;color:var(--muted);padding:5px 12px;border-radius:7px;font-size:11.5px;font-weight:600;cursor:pointer;font-family:inherit}
 .seg-toggle button.on{background:var(--primary);color:#fff}
-/* INSIGHTS */
 .insights{background:linear-gradient(120deg,rgba(59,130,246,.16),rgba(139,92,246,.14));border-left:4px solid var(--primary);margin-bottom:14px;flex-shrink:0}
 .insights ul{margin:6px 0 0;padding-left:18px;color:#b4c0d6;font-size:13.5px;line-height:1.55}
-/* HEALTH */
 .mini-stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px}
 .mini{background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;padding:10px 12px}
 .mini span{display:block;font-size:10.5px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
 .mini b{font-size:18px;font-weight:800}
 .bar-track{height:6px;background:rgba(255,255,255,.08);border-radius:6px;overflow:hidden;min-width:70px}
 .bar-fill{height:100%;border-radius:6px}
-/* TABLE */
 .table-container{overflow:auto;max-width:100%;margin-top:10px;flex-grow:1;max-height:560px;border-radius:12px;border:1px solid var(--border)}
 table{width:100%;border-collapse:separate;border-spacing:0;text-align:left;font-size:12.8px;min-width:1500px}
 th,td{padding:11px 12px;border-bottom:1px solid var(--border);white-space:nowrap}
@@ -95,7 +497,6 @@ tbody tr:hover td{background:#18233b}
 .b-wait{background:rgba(148,163,184,.14);color:var(--muted)}
 .aporte-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px dashed var(--border);font-size:13px;gap:10px}
 .aporte-row:last-child{border:none}
-/* PRIVACY */
 body.privacy .priv{filter:blur(9px);user-select:none}
 @media(max-width:1100px){
   body{height:auto;overflow:auto}
@@ -128,7 +529,7 @@ body.privacy .priv{filter:blur(9px);user-select:none}
   <div class="header-buttons">
     <div class="stamp">Atualizado em<br><b style="color:var(--text)">__ATUALIZADO__</b></div>
     <button class="btn" onclick="togglePrivacy()" id="btn-priv" title="Ocultar valores"><i class="fa-solid fa-eye"></i></button>
-    <button class="btn btn-primary" onclick="dispararAtualizacao()"><i class="fa-solid fa-rotate"></i> Atualizar Dados</button>
+    <button class="btn btn-primary" onclick="dispararAtualizacao(this)"><i class="fa-solid fa-rotate"></i> Atualizar Dados</button>
   </div>
 </header>
 
@@ -268,7 +669,7 @@ body.privacy .priv{filter:blur(9px);user-select:none}
   </div>
   <div class="card" style="margin-bottom:14px">
     <div class="chart-header">
-      <div><div class="chart-title"><i class="fa-solid fa-radar"></i> Radar de Aportes</div><div class="chart-sub">Clique nos títulos para ordenar</div></div>
+      <div><div class="chart-title"><i class="fa-solid fa-crosshairs"></i> Radar de Aportes</div><div class="chart-sub">Clique nos títulos para ordenar</div></div>
       <div class="filtros-prov">
         <input id="f-busca" class="input-s" placeholder="Buscar ativo..." oninput="renderTable()">
         <select id="f-status" class="select-filter" onchange="renderTable()">
@@ -448,7 +849,7 @@ for(let i=0;i<tmValues.length;i++){
   else { let pct=carteiraTotal>0?(tmValues[i]/carteiraTotal)*100:0; let sp=fp(pct); tmText.push(`<b>${tmLabels[i]}</b><br>${sp}`); tmHover.push(`<b>${tmLabels[i]}</b><br>Valor: ${strMoeda}<br>Participação: ${sp}`); }
 }
 let layoutTreemap=cloneLayout(baseLayout); layoutTreemap.margin={t:5,l:5,r:5,b:5}; delete layoutTreemap.xaxis; delete layoutTreemap.yaxis;
-Plotly.newPlot('grafico-treemap',[{type:"treemap",ids:tmIds,labels:tmLabels,parents:tmParents,values:tmValues,branchvalues:"total",text:tmText,hovertext:tmHover,textinfo:"text",hoverinfo:"text",marker:{line:{width:1.5,color:'#0b1224'},colors:undefined},pathbar:{visible:false}}],layoutTreemap,configPlotly);
+Plotly.newPlot('grafico-treemap',[{type:"treemap",ids:tmIds,labels:tmLabels,parents:tmParents,values:tmValues,branchvalues:"total",text:tmText,hovertext:tmHover,textinfo:"text",hoverinfo:"text",marker:{line:{width:1.5,color:'#0b1224'}},pathbar:{visible:false}}],layoutTreemap,configPlotly);
 (function(){
   let g=Object.keys(totaisGestora).map(k=>({k:k,v:totaisGestora[k]})).sort((a,b)=>a.v-b.v);
   let lay=cloneLayout(baseLayout); lay.margin={t:5,l:10,r:60,b:30}; lay.hovermode='closest';
@@ -486,7 +887,6 @@ function atualizarAbaProventos(){
   document.getElementById('kpi-prov-yoc').innerText='Yield on Cost 12M: '+fp(yoc12);
   document.getElementById('kpi-yoc12').innerText=fp(valInvestidoAtual>0?(dadosProvRaw.filter(d=>d.is_12m).reduce((s,d)=>s+d.valor,0)/valInvestidoAtual)*100:0);
 
-  // acumulado
   let acc=0, accArr=valoresBarra.map(v=>{ acc+=v; return acc; });
   let lay=cloneLayout(baseLayout); lay.showlegend=false;
   lay.yaxis.tickprefix='R$ '; lay.margin={t:20,l:65,r:70,b:40};
@@ -497,7 +897,6 @@ function atualizarAbaProventos(){
     { x:labelsBarra, y:accArr, type:'scatter', mode:'lines', name:'Acumulado', yaxis:'y2', line:{color:'#22d3ee',width:2.5,shape:'spline'} }
   ],lay,configPlotly);
 
-  // heatmap ano x mês
   const meses=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   let anos=[...new Set(labelsBarra.filter(l=>/^[0-9]{4}-[0-9]{2}$/.test(l)).map(l=>l.slice(0,4)))].sort();
   let z=anos.map(a=>meses.map((m,i)=>{ const k=a+'-'+String(i+1).padStart(2,'0'); return dadosGrafico[k]!==undefined?dadosGrafico[k]:null; }));
@@ -507,7 +906,6 @@ function atualizarAbaProventos(){
     colorscale:[[0,'rgba(16,185,129,.12)'],[1,'#10b981']],showscale:false,
     hovertemplate:'<b>%{y} · %{x}</b><br>R$ %{z:,.2f}<extra></extra>'}],lh,configPlotly);
 
-  // por ativo
   let porAtivo={}; df.forEach(d=>{ porAtivo[d.ticker]=(porAtivo[d.ticker]||0)+d.valor; });
   let pa=Object.keys(porAtivo).map(k=>({k:k,v:porAtivo[k]})).sort((a,b)=>b.v-a.v);
   if(pa.length>9){ const resto=pa.slice(8).reduce((s,d)=>s+d.v,0); pa=pa.slice(0,8); pa.push({k:'Outros',v:resto}); }
@@ -560,7 +958,7 @@ function renderTable(){
   let filtroStatus=document.getElementById('f-status').value;
   let busca=(document.getElementById('f-busca').value||'').toLowerCase().trim();
   let dadosFiltrados=rebalanceDataArray.filter(d=>{
-    if(busca && d.ticker.toLowerCase().indexOf(busca)===-1) return false;
+    if(busca && String(d.ticker).toLowerCase().indexOf(busca)===-1) return false;
     return filtroStatus==='Todos' || d.actionType===filtroStatus;
   });
   dadosFiltrados.sort((a,b)=>{
@@ -632,12 +1030,11 @@ function simularAporte(){
   const alvos=rebalanceDataArray.filter(d=>d.actionType==='Comprar'&&(d.target-d.current)>0);
   if(alvos.length===0){ box.innerHTML='<div class="chart-sub" style="padding:10px 0">Nenhum ativo com sinal de compra no momento.</div>'; return; }
   const falta=alvos.reduce((s,d)=>s+(d.target-d.current),0);
-  let usado=0, html='';
-  alvos.sort((a,b)=>(b.target-b.current)-(a.target-a.current)).forEach(d=>{
+  let html='';
+  alvos.slice().sort((a,b)=>(b.target-b.current)-(a.target-a.current)).forEach(d=>{
     const need=d.target-d.current;
     const aloc=Math.min(need, v*need/falta);
     const cotas=d.preco>0?Math.floor(aloc/d.preco):0;
-    usado+=aloc;
     html+=`<div class="aporte-row"><div><b>${d.ticker}</b><div class="chart-sub">${d.seg}</div></div>
       <div style="text-align:right"><b style="color:var(--green)" class="priv">${formataMoedaJS(aloc)}</b><div class="chart-sub">≈ ${cotas} cotas</div></div></div>`;
   });
@@ -665,7 +1062,7 @@ function updateTarget(seg,val){ segmentTargets[seg]=parseFloat(val)||0; drawReba
 drawRebalanceTab();
 
 // ================= ATUALIZAR VIA GITHUB API =================
-async function dispararAtualizacao(){
+async function dispararAtualizacao(btn){
   const GITHUB_USER='ncanivaldo-bit';
   const GITHUB_REPO='carteira';
   const WORKFLOW_FILE='atualiza_dashboard.yml';
@@ -675,7 +1072,6 @@ async function dispararAtualizacao(){
     if(!token){ alert("Atualização cancelada. O Token é necessário."); return; }
     localStorage.setItem('github_token',token);
   }
-  const btn=event.currentTarget;
   const textoOriginal=btn.innerHTML;
   btn.innerHTML='<i class="fa-solid fa-spinner fa-spin"></i> Enviando comando...';
   btn.disabled=true;
@@ -704,3 +1100,21 @@ async function dispararAtualizacao(){
 </script>
 </body>
 </html>"""
+html_final = html_template.replace("__PATRIMONIO__", str_patrimonio).replace("__PATRIMONIO_ATUAL_NUM__", str(patrimonio_atual))
+html_final = html_final.replace("__INVESTIDO__", str_investido).replace("__INVESTIDO_ATUAL_NUM__", str(investido_atual))
+html_final = html_final.replace("__LUCRO__", str_lucro).replace("__GANHO_CAPITAL__", str_ganho_capital)
+html_final = html_final.replace("__DIVIDENDOS_TOTAL__", str_dividendos_total).replace("__DIVIDENDOS_12M__", str_dividendos_12m)
+html_final = html_final.replace("__ULTIMOS_PROVENTOS__", str_ultimos_proventos).replace("__PCT_ULTIMOS_PROVENTOS__", str_pct_ultimos_proventos)
+html_final = html_final.replace("__RENTABILIDADE_TOTAL__", str_rentabilidade_total).replace("__RENTABILIDADE_12M__", str_rentabilidade_12m)
+html_final = html_final.replace("__COR_LUCRO__", cor_lucro).replace("__COR_GANHO__", cor_ganho)
+html_final = html_final.replace("__COR_RENT_12M__", cor_rent_12m).replace("__COR_RENT_TOTAL__", cor_rent_total)
+html_final = html_final.replace("__SINAL_RENT_12M__", sinal_rent_12m).replace("__SINAL_RENT_TOTAL__", sinal_rent_total)
+html_final = html_final.replace("__COR_VAR_PAT__", cor_var_pat).replace("__VAR_PATRIMONIO__", str_var_patrimonio)
+html_final = html_final.replace("__MESES_JS__", meses_js).replace("__VALOR_APLICADO_JS__", valor_aplicado_js).replace("__VALOR_MERCADO_JS__", valor_mercado_js)
+html_final = html_final.replace("__DADOS_CARTEIRA_JS__", dados_carteira_js).replace("__DADOS_PROVENTOS_RAW_JS__", dados_proventos_raw_js)
+html_final = html_final.replace("__DADOS_METRICAS_JS__", dados_metricas_js)
+html_final = html_final.replace("__INSIGHTS_HTML__", html_insights)
+html_final = html_final.replace("__ATUALIZADO__", datetime.now(ZoneInfo("America/Sao_Paulo")).strftime('%d/%m/%Y %H:%M'))
+nome_arquivo = "index.html"
+with open(nome_arquivo, "w", encoding="utf-8") as f: f.write(html_final)
+print("Execução Concluída! Planilha Atualizada e Dashboard Premium index.html gerado com sucesso.")
